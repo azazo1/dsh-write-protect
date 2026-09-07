@@ -30,15 +30,15 @@
   disabled: !!js process.platform === 'linux' || process.platform === 'darwin'
 - insert:
     # 主入口: policy 半区 (package main, 同时是 client 半区的声明标记).
-    # `readOnlyPaths` 是保护路径的部署 base (相对工作区或绝对路径, 默认
-    # `['**/.git']` 即任意层级的 .git, 置空列表整体停用); 用户在 Web 设置页
-    # "写入保护" 保存的 gitignore 风格文本会覆盖该数组并实时生效.
+    # `readOnlyPaths` 不在此声明: 默认值 (保护任意条目) 由 schema 从
+    # src/constants.ts 的 DEFAULT_READ_ONLY_PATHS 兜底; 用户在 Web 设置页
+    # "写入保护" 保存的 gitignore 风格文本会覆盖部署 base 并实时生效. 需要部署级
+    # 覆盖时在此显式给出 readOnlyPaths 数组 (整行替换, mode/workspaceRoot 必须带上).
     - id: dsh-write-protect-policy
       name: dsh-write-protect
       config:
         mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
         workspaceRoot: !!js process.cwd()
-        readOnlyPaths: ['**/.git']
 
     # fs 围栏半区: write/edit 工具拒绝写入保护路径 (全平台).
     - id: dsh-write-protect-fs

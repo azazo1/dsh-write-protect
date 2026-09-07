@@ -110,7 +110,7 @@ export function WriteProtectSection(
         createElement('code', null, '!'), ' 开头表示从保护中排除, 支持 ',
         createElement('code', null, '*'), ' 和 ', createElement('code', null, '**'),
         ' 通配 (通配只匹配已存在的路径). 示例: ',
-        createElement('code', null, '.git'), ', ', createElement('code', null, 'secrets/*'),
+        createElement('code', null, 'vendor'), ', ', createElement('code', null, 'secrets/*'),
         '. 清空全部条目即停用保护.',
       ),
       createElement(

@@ -10,11 +10,11 @@ export const PLUGIN_ID = 'dsh-write-protect'
 /** settings namespace 的 patterns 字段名 (gitignore 风格的多行文本). */
 export const PATTERNS_FIELD = 'patterns'
 
-/** 未做任何用户编辑时的默认保护配置文本. */
-export const DEFAULT_PATTERN_TEXT = '**/.git'
-
-/** patch 配置的 `readOnlyPaths` 数组默认值 (与 {@link DEFAULT_PATTERN_TEXT} 等价). */
-export const DEFAULT_READ_ONLY_PATHS: readonly string[] = ['**/.git']
+/**
+ * 保护路径的唯一默认来源: patch 配置 `readOnlyPaths` 的 schema 默认值与
+ * 设置页展示的部署 base 都由它推导. 修改默认保护范围只需改这一处.
+ */
+export const DEFAULT_READ_ONLY_PATHS: readonly string[] = ['.git']
 
 /**
  * systemPrompt 中写保护提示的位置: 紧跟官方 sandbox-policy context (110),

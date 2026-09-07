@@ -1,6 +1,6 @@
 # dsh-write-protect
 
-为 DSH 沙箱增加工作区子路径只读保护: 声明过的路径 (默认任意层级的 `.git` 目录) 对模型可见的全部写入口保持只读 — 沙箱内的 CLI 命令 (bash 等) 和 write/edit 工具都会被拒绝写入, 读取不受影响.
+为 DSH 沙箱增加工作区子路径只读保护: 声明过的路径对模型可见的全部写入口保持只读 — 沙箱内的 CLI 命令 (bash 等) 和 write/edit 工具都会被拒绝写入, 读取不受影响.
 
 DSH 官方沙箱只有 "全工作区可写 / 全只读" 两个粒度, 无法对工作区内的子路径 (典型如 `.git`) 收窄; Codex 等实现默认保护 `.git`, 本插件补齐这一块.
 
@@ -20,7 +20,7 @@ dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.0
 
 ## 配置
 
-保护路径在 patch 的 policy 行配置, 默认 `['**/.git']` 即保护工作区内任意层级的 `.git`:
+保护路径的默认值统一定义在 `src/constants.ts` 的 `DEFAULT_READ_ONLY_PATHS`, patch 的 policy 行与设置页部署 base 都由它兜底; 需要部署级覆盖时在 patch 行显式给出 `readOnlyPaths`:
 
 ```yml
 - id: dsh-write-protect-policy
@@ -28,7 +28,8 @@ dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.0
   config:
     mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
     workspaceRoot: !!js process.cwd()
-    readOnlyPaths: ['**/.git']
+    # 部署级覆盖示例.
+    # readOnlyPaths: ['**/.git', '/etc/pki']
 ```
 
 `readOnlyPaths` 的每一项:
@@ -40,11 +41,11 @@ dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.0
 
 ## 设置页
 
-Web Settings 侧边栏的 "写入保护" 页面编辑 gitignore 风格的保护路径文本, 保存后实时生效并持久化, 覆盖 patch 配置的 `readOnlyPaths` 部署 base (未编辑过时页面展示 base):
+Web Settings 侧边栏的 "写入保护" 页面编辑 gitignore 风格的保护路径文本, 保存后实时生效并持久化:
 
 ```text
 # 逐行一条路径
-.git
+vendor
 secrets/*.pem
 !secrets/example.pem
 ```
@@ -68,7 +69,7 @@ secrets/*.pem
 
 保护检查独立于沙箱模式: `danger-full-access` 下进程沙箱整体放开, 但 write/edit 工具对保护路径的拒绝仍然生效; `read-only` 模式下官方围栏本就全量拒绝, 保护检查自动短路. `workspace-write` 是保护的主场景.
 
-配置入口有两个 (设置页覆盖 patch base, 见上一节): patch 配置的 `readOnlyPaths` 数组与设置页的 patterns 文本最终都经同一解析器展开 (含通配枚举), 三个半区消费同一份结果.
+patch 配置与设置页文本都经同一解析器展开 (含通配枚举), 三个半区消费同一份结果.
 
 ### 边界与已知限制
 
