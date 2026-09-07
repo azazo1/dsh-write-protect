@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "policy": "dsh-plugin-naming/v1",
+  "plugin": {
+    "namespace": "azazo1",
+    "name": "write-protect",
+    "coordinate": "azazo1/write-protect",
+    "packageName": "dsh-write-protect"
+  },
+  "names": {
+    "pluginNames": [
+      "dsh-write-protect-policy",
+      "dsh-write-protect-fs",
+      "dsh-write-protect-provider"
+    ],
+    "loaderIds": [
+      "dsh-write-protect-policy",
+      "dsh-write-protect-fs",
+      "dsh-write-protect-provider"
+    ],
+    "services": [],
+    "tools": [],
+    "commands": [],
+    "skills": [],
+    "skillProviders": [],
+    "events": [],
+    "settingsNamespaces": [],
+    "routes": []
+  }
+}

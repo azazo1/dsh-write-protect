@@ -1,0 +1,49 @@
+# dsh-write-protect bundle patch
+#
+# This file is the `dsh.bundle.patch` layer of the published npm package:
+# install it with the official CLI —
+#
+#   dsh plugin --profile <name> add dsh-write-protect
+#
+# — and the command appends this package to the profile's bundle stack; the
+# profile boot merges THIS patch over the base bundle. Config-level HMR
+# applies changes live; no `dsh web` restart is needed for config edits.
+#
+# The patch swaps the stock sandbox rows for this package's own:
+#   - `sandbox-policy`        -> policy.ts   (resolve() 注入 readOnlyPaths)
+#   - `fs-sandbox`            -> fs.ts       (write/edit 拒绝保护路径, 全平台)
+#   - `sandbox` (linux/darwin) -> provider.ts (bwrap ro-bind / Seatbelt deny 追加)
+#
+# Patch semantics (applyEntryPatches): a targeted patch may only override
+# fields — the plugin `name` cannot change — so swapping a plugin means
+# disabling the stock row and inserting a new row with a fresh id. `mode` /
+# `workspaceRoot` restate the base bundle's values because config replacement
+# is wholesale. The `!!js` disabled expressions keep Windows on the stock ACL
+# provider (the provider half is Linux/macOS only); the policy and fs halves
+# stay mounted on every platform.
+- id: sandbox-policy
+  disabled: true
+- id: fs-sandbox
+  disabled: true
+# Linux/macOS 上由本包的 provider 半区替换; Windows 保留官方 ACL provider.
+- id: sandbox
+  disabled: !!js process.platform === 'linux' || process.platform === 'darwin'
+- insert:
+    # 主入口: policy 半区 (package main). 保护路径的声明入口 — `readOnlyPaths`
+    # 接受相对工作区的路径 (如 `.git`, `node_modules`) 或绝对路径, 默认
+    # `['.git']`; 置为空列表即可整体停用.
+    - id: dsh-write-protect-policy
+      name: dsh-write-protect
+      config:
+        mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+        workspaceRoot: !!js process.cwd()
+        readOnlyPaths: ['.git']
+
+    # fs 围栏半区: write/edit 工具拒绝写入保护路径 (全平台).
+    - id: dsh-write-protect-fs
+      name: dsh-write-protect/fs
+
+    # 进程沙箱半区: bash 等被沙箱约束的子进程 (仅 Linux/macOS).
+    - id: dsh-write-protect-provider
+      name: dsh-write-protect/provider
+      disabled: !!js process.platform !== 'linux' && process.platform !== 'darwin'

@@ -1,0 +1,67 @@
+{
+  "name": "dsh-write-protect",
+  "version": "0.1.0",
+  "description": "DSH sandbox extension: protect declared workspace subpaths (e.g. .git) from writes, enforced for both sandboxed CLI commands (Linux bwrap ro-bind, macOS Seatbelt deny) and the write/edit tools. 为 DSH 沙箱增加工作区子路径只读保护, 防止写入声明过的路径.",
+  "type": "module",
+  "main": "./lib/policy.mjs",
+  "exports": {
+    ".": "./lib/policy.mjs",
+    "./fs": "./lib/fs.mjs",
+    "./provider": "./lib/provider.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsdown",
+    "test": "vitest run"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "sandbox",
+    "write-protect",
+    "read-only"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "packageManager": "pnpm@11.24.0",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-fs-sandbox": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-fs-sandbox": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.23.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.0.0"
+  }
+}
