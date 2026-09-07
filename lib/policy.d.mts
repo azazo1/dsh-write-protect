@@ -4,15 +4,15 @@ import { SandboxExecutionPolicy, SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { Context } from "@deepseek-ai/cordis";
 //#region src/policy.d.ts
 export declare const name = "dsh-write-protect-policy";
-/** 插件配置: 官方 policy 的部署字段原样保留, 外加保护路径配置项. */
+/** 插件配置: 官方 policy 的部署字段原样保留, 外加保护路径部署 base. */
 export interface Config {
   /** 会话启动时的文件沙箱模式 (缺省 `read-only`, 与官方一致). */
   mode?: SandboxMode;
   /** 无会话调用与会话没有 cwd 时的回退工作区根 (缺省 `process.cwd()`). */
   workspaceRoot?: string;
   /**
-   * 受保护路径配置项: 相对路径相对会话工作区根解析, 绝对路径原样使用;
-   * 空白项在加载时报错.
+   * 受保护路径部署 base (数组形态). 用户在 Web 设置页保存过 patterns 文本后
+   * 该数组不再生效; 未编辑时数组逐行合并为生效文本.
    */
   readOnlyPaths?: string[];
 }
@@ -26,8 +26,20 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     workspaceRoot: z<string, string>;
     readOnlyPaths: z<string[], string[]>;
   }>>;
-  private readonly entries;
+  private readonly baseEntries;
+  private settingsOwner;
+  private cache;
+  private readonly warned;
   constructor(ctx: Context, config: Config);
+  /** 部署 base 的文本形态 (patch 数组逐行合并). */
+  private baseText;
+  /** 当前生效文本: 用户在设置页保存过的 patterns 覆盖部署 base. */
+  private currentText;
+  /**
+   * 展开当前生效文本为 canonical 保护路径, 按 (文本, 工作区根) 做 TTL 缓存.
+   * 展开告警 (如 glob 遍历预算耗尽) 对每条只告警一次.
+   */
+  private expanded;
   /**
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
    * 追加注入解析后的保护路径.

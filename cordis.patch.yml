@@ -29,15 +29,16 @@
 - id: sandbox
   disabled: !!js process.platform === 'linux' || process.platform === 'darwin'
 - insert:
-    # 主入口: policy 半区 (package main). 保护路径的声明入口 — `readOnlyPaths`
-    # 接受相对工作区的路径 (如 `.git`, `node_modules`) 或绝对路径, 默认
-    # `['.git']`; 置为空列表即可整体停用.
+    # 主入口: policy 半区 (package main, 同时是 client 半区的声明标记).
+    # `readOnlyPaths` 是保护路径的部署 base (相对工作区或绝对路径, 默认
+    # `['**/.git']` 即任意层级的 .git, 置空列表整体停用); 用户在 Web 设置页
+    # "写入保护" 保存的 gitignore 风格文本会覆盖该数组并实时生效.
     - id: dsh-write-protect-policy
       name: dsh-write-protect
       config:
         mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
         workspaceRoot: !!js process.cwd()
-        readOnlyPaths: ['.git']
+        readOnlyPaths: ['**/.git']
 
     # fs 围栏半区: write/edit 工具拒绝写入保护路径 (全平台).
     - id: dsh-write-protect-fs

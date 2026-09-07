@@ -24,7 +24,9 @@
     "skills": [],
     "skillProviders": [],
     "events": [],
-    "settingsNamespaces": [],
+    "settingsNamespaces": [
+      "dsh-write-protect"
+    ],
     "routes": []
   }
 }

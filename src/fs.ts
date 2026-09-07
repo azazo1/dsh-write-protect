@@ -15,7 +15,6 @@ import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import { isPathUnder } from './containment.ts'
 
 export const name = 'dsh-write-protect-fs'
-
 export class WriteProtectFileSystem extends SandboxedFileSystem {
   /**
    * 先做保护路径检查, 再委托继承的围栏写入. 拒绝发生在官方 checkedTarget

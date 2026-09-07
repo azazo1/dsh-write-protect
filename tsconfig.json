@@ -4,7 +4,7 @@
     "module": "es2022",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
-    "lib": ["es2023"],
+    "lib": ["es2023", "dom"],
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "tsdown.host.config.ts", "tsdown.client.config.ts", "vitest.config.ts"]
 }

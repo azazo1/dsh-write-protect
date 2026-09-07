@@ -1,13 +1,14 @@
 {
   "name": "dsh-write-protect",
   "version": "0.1.0",
-  "description": "DSH sandbox extension: protect declared workspace subpaths (e.g. .git) from writes, enforced for both sandboxed CLI commands (Linux bwrap ro-bind, macOS Seatbelt deny) and the write/edit tools. 为 DSH 沙箱增加工作区子路径只读保护, 防止写入声明过的路径.",
+  "description": "DSH sandbox extension: protect declared workspace subpaths (e.g. .git) from writes, enforced for both sandboxed CLI commands (Linux bwrap ro-bind, macOS Seatbelt deny) and the write/edit tools, with a gitignore-style settings page. 为 DSH 沙箱增加工作区子路径只读保护, 防止写入声明过的路径.",
   "type": "module",
   "main": "./lib/policy.mjs",
   "exports": {
     ".": "./lib/policy.mjs",
     "./fs": "./lib/fs.mjs",
     "./provider": "./lib/provider.mjs",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -18,12 +19,19 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsdown",
+    "build": "tsdown --config tsdown.host.config.ts && tsdown --config tsdown.client.config.ts",
     "test": "vitest run"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
     }
   },
   "keywords": [
@@ -46,20 +54,28 @@
     "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-policy": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-system-prompt": "^0.1.2-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "react": ">=18"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-fs-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-policy": "^0.1.2-rc.1",
-    "@deepseek-ai/dsh-session-projection": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-session-projection": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-system-prompt": "^0.1.2-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "@types/node": "^22.0.0",
+    "@types/react": "^18.2.0",
+    "react": "^18.2.0",
     "tsdown": "^0.23.0",
     "typescript": "^5.9.0",
     "vitest": "^3.0.0"

@@ -11,9 +11,10 @@ install:
 typecheck:
     pnpm exec tsc --noEmit
 
-# 构建 Host ESM bundle 和类型声明.
+# 构建 Host ESM bundle 和 Client loader bundle (含类型声明).
 build:
-    pnpm exec tsdown
+    pnpm exec tsdown --config tsdown.host.config.ts
+    pnpm exec tsdown --config tsdown.client.config.ts
 
 # 执行项目测试套件.
 test:
