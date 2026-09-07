@@ -1,0 +1,312 @@
+name: release
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的已有 tag, 留空时只构建并上传 artifact"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      is_release: ${{ steps.release_context.outputs.is_release }}
+      tag_name: ${{ steps.release_context.outputs.tag_name }}
+      source_ref: ${{ steps.release_context.outputs.source_ref }}
+      version: ${{ steps.release_version.outputs.version }}
+    steps:
+      - name: 解析发布上下文
+        id: release_context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CURRENT_REF: ${{ github.ref }}
+          CURRENT_REF_NAME: ${{ github.ref_name }}
+          CURRENT_SHA: ${{ github.sha }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          is_release=false
+          tag_name=""
+          source_ref="$CURRENT_SHA"
+
+          if [[ "$EVENT_NAME" == "push" && "$CURRENT_REF" == refs/tags/* ]]; then
+            is_release=true
+            tag_name="$CURRENT_REF_NAME"
+            source_ref="$CURRENT_REF"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$DISPATCH_TAG" ]]; then
+            git check-ref-format "refs/tags/$DISPATCH_TAG"
+            is_release=true
+            tag_name="$DISPATCH_TAG"
+            source_ref="refs/tags/$DISPATCH_TAG"
+          fi
+
+          echo "is_release=$is_release" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$source_ref" >> "$GITHUB_OUTPUT"
+
+      - name: 检出发布 tag
+        if: steps.release_context.outputs.is_release == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release_context.outputs.source_ref }}
+
+      - name: 校验发布版本
+        id: release_version
+        if: steps.release_context.outputs.is_release == 'true'
+        env:
+          TAG_NAME: ${{ steps.release_context.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="v$package_version"
+
+          if [[ "$TAG_NAME" != "$expected_tag" ]]; then
+            echo "tag $TAG_NAME 与包版本 $package_version 不一致" >&2
+            exit 1
+          fi
+
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出目标提交
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.source_ref }}
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run typecheck
+
+      - name: 构建
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm run build
+
+      - name: 测试
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm test
+
+      - name: 校验插件入口
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check lib/policy.mjs
+          node --check lib/fs.mjs
+          node --check lib/provider.mjs
+          node --check lib/client.js
+          test -s lib/policy.mjs
+          test -s lib/fs.mjs
+          test -s lib/provider.mjs
+          test -s lib/client.js
+          test -s lib/policy.d.mts
+          test -s lib/fs.d.mts
+          test -s lib/provider.d.mts
+          test -s cordis.patch.yml
+          echo "plugin 入口与 patch 完整"
+
+      - name: 打包发布产物
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.version.outputs.is_release == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm pack --pack-destination dist
+          ls -l dist
+          test -s dist/dsh-write-protect-*.tgz
+
+      - name: 上传构建产物
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.version.outputs.is_release == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-write-protect
+          path: dist/dsh-write-protect-*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: needs.version.outputs.is_release == 'true'
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出发布 tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.source_ref }}
+          fetch-depth: 0
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-write-protect
+          path: release-artifacts
+
+      - name: 重新获取 annotated tag object
+        env:
+          TAG_NAME: ${{ needs.version.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git check-ref-format "refs/tags/$TAG_NAME"
+          git fetch --force origin \
+            "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+
+      - name: 校验 tag annotation
+        env:
+          TAG_NAME: ${{ needs.version.outputs.tag_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/$TAG_NAME"
+          manual_notes="docs/changelog/$VERSION.md"
+
+          if [[ ! -s "$manual_notes" ]]; then
+            echo "缺少 release notes: $manual_notes" >&2
+            exit 1
+          fi
+
+          tag_type="$(git cat-file -t "$tag_ref")"
+          if [[ "$tag_type" != "tag" ]]; then
+            echo "发布 tag 必须是 annotated tag: $TAG_NAME" >&2
+            exit 1
+          fi
+
+          git cat-file tag "$tag_ref" | sed '1,/^$/d' > tag-notes.md
+          if ! grep -q '[^[:space:]]' tag-notes.md; then
+            echo "发布 tag 的 annotation 不能为空: $TAG_NAME" >&2
+            exit 1
+          fi
+
+          if ! cmp -s "$manual_notes" tag-notes.md; then
+            echo "发布 tag 的 annotation 与 $manual_notes 不一致" >&2
+            diff -u "$manual_notes" tag-notes.md || true
+            exit 1
+          fi
+
+      - name: 生成 release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.version.outputs.tag_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          manual_notes="docs/changelog/$VERSION.md"
+          base_tag_file="docs/changelog/$VERSION-base.txt"
+          api_args=(
+            --method POST
+            "repos/$GITHUB_REPOSITORY/releases/generate-notes"
+            -f "tag_name=$TAG_NAME"
+          )
+
+          target_sha="$(git rev-parse HEAD)"
+          api_args+=(-f "target_commitish=$target_sha")
+
+          if [[ -s "$base_tag_file" ]]; then
+            base_tag="$(<"$base_tag_file")"
+            git check-ref-format "refs/tags/$base_tag"
+            api_args+=(-f "previous_tag_name=$base_tag")
+          fi
+
+          gh api "${api_args[@]}" --jq '.body' > generated-notes.md
+          cp "$manual_notes" release-notes.md
+
+          if [[ -s generated-notes.md ]]; then
+            printf '\n---\n\n' >> release-notes.md
+            cat generated-notes.md >> release-notes.md
+          fi
+
+      - name: 生成校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          cd release-artifacts
+          archives=(dsh-write-protect-*.tgz)
+
+          if (( ${#archives[@]} != 1 )); then
+            echo "预期 1 个归档, 实际找到 ${#archives[@]} 个" >&2
+            exit 1
+          fi
+
+          sha256sum "${archives[@]}" > SHA256SUMS
+
+      - name: 创建或更新 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.version.outputs.tag_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(
+            release-artifacts/dsh-write-protect-*.tgz
+            release-artifacts/SHA256SUMS
+          )
+
+          if (( ${#assets[@]} != 2 )); then
+            echo "预期 2 个发布文件, 实际找到 ${#assets[@]} 个" >&2
+            exit 1
+          fi
+
+          prerelease_args=()
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --verify-tag \
+              --title "dsh-write-protect v$VERSION" \
+              --notes-file release-notes.md \
+              "${prerelease_args[@]}"
+            gh release upload "$TAG_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG_NAME" "${assets[@]}" \
+              --verify-tag \
+              --title "dsh-write-protect v$VERSION" \
+              --notes-file release-notes.md \
+              "${prerelease_args[@]}"
+          fi
