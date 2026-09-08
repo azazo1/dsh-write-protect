@@ -36,8 +36,8 @@ export const PROMPT_CONTEXT_ORDER = 112
 /** 单次 glob 展开的遍历节点预算, 防止 `**` 模式在超大目录树上失控. */
 export const EXPAND_NODE_BUDGET = 5000
 
-/** 设置页预览的 Host 路由. 相对当前 Web origin, POST JSON. */
-export const PREVIEW_PATH = '/dsh-write-protect/preview'
+/** 设置页预览的 Host Fetch 路由, 走 `/api` 鉴权通道. POST JSON. */
+export const PREVIEW_PATH = '/api/dsh-write-protect.preview'
 
 /** 设置页预览请求/响应: 展开后的生效路径与未生效原因. */
 export interface PathPreview {

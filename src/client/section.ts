@@ -99,11 +99,18 @@ export function WriteProtectSection(
     setPreviewError('')
     void fetch(PREVIEW_PATH, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({ patterns: patternsValue, writablePatterns: writableValue }),
     }).then(async (response) => {
-      const payload = await response.json() as { error?: string } & Partial<PathPreview>
+      const text = await response.text()
+      if (text.length === 0) throw new Error(`preview failed (${String(response.status)}, empty body)`)
+      let payload: { error?: string } & Partial<PathPreview>
+      try {
+        payload = JSON.parse(text) as { error?: string } & Partial<PathPreview>
+      } catch {
+        throw new Error(`preview failed (${String(response.status)}): ${text.slice(0, 180)}`)
+      }
       if (!response.ok) throw new Error(payload.error ?? `preview failed (${String(response.status)})`)
       if (typeof payload.workspaceRoot !== 'string' || !Array.isArray(payload.readOnly) || !Array.isArray(payload.writable) || !Array.isArray(payload.warnings)) {
         throw new Error('preview response is malformed')
