@@ -1,7 +1,7 @@
 {
   "name": "dsh-write-protect",
   "version": "0.1.0",
-  "description": "DSH sandbox extension: protect declared workspace subpaths (e.g. .git) from writes, enforced for both sandboxed CLI commands (Linux bwrap ro-bind, macOS Seatbelt deny) and the write/edit tools, with a gitignore-style settings page. 为 DSH 沙箱增加工作区子路径只读保护, 防止写入声明过的路径.",
+  "description": "DSH sandbox extension: protect declared workspace subpaths (e.g. .git) from writes, and optionally grant extra writable roots under workspace-write, enforced for sandboxed CLI commands and the write/edit tools. 为 DSH 沙箱增加工作区子路径只读保护, 并支持在 workspace-write 下声明额外可写根.",
   "type": "module",
   "main": "./lib/policy.mjs",
   "exports": {
@@ -50,6 +50,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-fs-local": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-fs-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",
@@ -65,6 +66,7 @@
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-fs-local": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-fs-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox": "^0.1.2-rc.1",
     "@deepseek-ai/dsh-sandbox-local": "^0.1.2-rc.1",

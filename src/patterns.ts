@@ -17,7 +17,7 @@
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { relative, resolve as resolvePath } from 'node:path'
+import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import { EXPAND_NODE_BUDGET } from './constants.ts'
 
@@ -487,6 +487,88 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
   for (const candidate of candidates) {
     if (!lastMatchKeeps(candidate, compiledEntries, workspaceRoot)) continue
     const canonical = canonicalPath(candidate.path)
+    if (seen.has(canonical)) continue
+    seen.add(canonical)
+    paths.push(canonical)
+  }
+  return { paths, warnings }
+}
+
+/** 未转义的 glob 元字符: 额外可写根是字面路径, 命中则拒绝该行. */
+function hasUnescapedGlobMeta(line: string): boolean {
+  for (let index = 0; index < line.length; index += 1) {
+    if (line[index] === '\\') {
+      index += 1
+      continue
+    }
+    const ch = line[index]
+    if (ch === '*' || ch === '?' || ch === '[') return true
+  }
+  return false
+}
+
+/** canonical 路径是否就是文件系统根 (POSIX `/` 或 Windows 盘符根). */
+function isFilesystemRoot(path: string): boolean {
+  const canonical = canonicalPath(path)
+  return canonical === parsePath(canonical).root
+}
+
+/** 词法包含: extra 可写根若已落在工作区内则没有放宽效果. */
+function isLexicallyUnderRoot(path: string, root: string): boolean {
+  const caseSensitive = process.platform !== 'win32'
+  const comparablePath = caseSensitive ? path : path.toLowerCase()
+  const comparableRoot = caseSensitive ? root : root.toLowerCase()
+  if (comparablePath === comparableRoot) return true
+  const prefix = comparableRoot.endsWith(sep) ? comparableRoot : comparableRoot + sep
+  return comparablePath.startsWith(prefix)
+}
+
+/**
+ * 把额外可写配置文本展开为 canonical 根. 与保护路径不同, 这里是字面路径
+ * 列表而不是 gitignore glob: `//` 或宿主绝对路径按文件系统解析, 其余相对
+ * 当前工作区 (含 `..`). 工作区内的条目没有放宽效果, 文件系统根拒绝;
+ * 不存在的路径仍保留词法形态 (fs / Seatbelt 可按前缀放行, bwrap / Landlock
+ * 在叠加时跳过).
+ * @param text - 逐行一条字面路径的配置文本.
+ * @param workspaceRoot - 本次调用的工作区根.
+ * @returns canonical 额外可写根 (去重) 与告警列表.
+ */
+export function expandWritablePaths(text: string, workspaceRoot: string): ExpandResult {
+  const warnings: string[] = []
+  const paths: string[] = []
+  const seen = new Set<string>()
+  const workspaceCanonical = canonicalPath(workspaceRoot)
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = stripTrailingSpaces(rawLine)
+    if (line.length === 0 || line.startsWith('#')) continue
+    if (line.startsWith('!')) {
+      warnings.push(`writable path "${line}" uses ! negation; extra writable roots are a literal list`)
+      continue
+    }
+    if (hasUnescapedGlobMeta(line)) {
+      warnings.push(`writable path "${line}" contains glob metacharacters; extra writable roots must be literal paths`)
+      continue
+    }
+
+    let resolved: string
+    if (line.startsWith('//')) {
+      resolved = resolvePath('/', line.slice(2))
+    } else if (isAbsolute(line)) {
+      resolved = resolvePath(line)
+    } else {
+      resolved = resolvePath(workspaceRoot, line)
+    }
+
+    if (isFilesystemRoot(resolved)) {
+      warnings.push(`writable path "${line}" resolves to the filesystem root and is rejected`)
+      continue
+    }
+    const canonical = canonicalPath(resolved)
+    if (isLexicallyUnderRoot(canonical, workspaceCanonical)) {
+      warnings.push(`writable path "${line}" is already inside the workspace and is ignored`)
+      continue
+    }
     if (seen.has(canonical)) continue
     seen.add(canonical)
     paths.push(canonical)

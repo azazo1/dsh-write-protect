@@ -16,9 +16,13 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)',
   const ws = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-e2e-')))
   mkdirSync(join(ws, 'gitdir'))
   const protectedDir = join(ws, 'gitdir')
+  const extra = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-e2e-extra-')))
+  // 外层已有 Seatbelt 时内层 sandbox-exec 无法再 apply profile (exit 71).
+  const nestedSandbox = spawnSync('sandbox-exec', ['-p', '(version 1) (allow default)', '--', 'true']).status !== 0
 
   afterAll(() => {
     rmSync(ws, { recursive: true, force: true })
+    rmSync(extra, { recursive: true, force: true })
   })
 
   async function confine(policy: SandboxPolicy, argv: string[]): Promise<string[]> {
@@ -44,7 +48,7 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)',
     expect(result.stderr.toLowerCase()).toContain('operation not permitted')
   })
 
-  it('保护路径之外的工作区写入照常放行', async () => {
+  it.skipIf(nestedSandbox)('保护路径之外的工作区写入照常放行', async () => {
     const argv = await confine(
       { mode: 'workspace-write', workspaceRoot: ws, readOnlyPaths: [protectedDir] },
       ['touch', join(ws, 'allowed.txt')],
@@ -56,6 +60,26 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)',
     const argv = await confine(
       { mode: 'read-only', workspaceRoot: ws },
       ['touch', join(ws, 'readonly-denied.txt')],
+    )
+    const result = run(argv)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr.toLowerCase()).toContain('operation not permitted')
+  })
+
+  it.skipIf(nestedSandbox)('额外可写根内的写入被 Seatbelt 放行', async () => {
+    const argv = await confine(
+      { mode: 'workspace-write', workspaceRoot: ws, writablePaths: [extra] },
+      ['touch', join(extra, 'allowed.txt')],
+    )
+    expect(run(argv).status).toBe(0)
+  })
+
+  it('额外可写根内部的保护路径仍被拒绝', async () => {
+    const nested = join(extra, 'gitdir')
+    mkdirSync(nested)
+    const argv = await confine(
+      { mode: 'workspace-write', workspaceRoot: ws, readOnlyPaths: [nested], writablePaths: [extra] },
+      ['touch', join(nested, 'denied.txt')],
     )
     const result = run(argv)
     expect(result.status).not.toBe(0)

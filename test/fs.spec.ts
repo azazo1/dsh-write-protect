@@ -23,10 +23,10 @@ let ctx: Context
 let fs: WriteProtectFileSystem
 let fiber: Awaited<ReturnType<Context['plugin']>>
 
-async function boot(mode: SandboxMode, readOnlyPaths: string[]): Promise<void> {
+async function boot(mode: SandboxMode, readOnlyPaths: string[], writablePaths: string[] = []): Promise<void> {
   ctx = new Context()
   await ctx.plugin(SessionProjectionRegistry)
-  await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths })
+  await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths, writablePaths })
   fiber = await ctx.plugin(WriteProtectFileSystem, { cwd: workspace })
   fs = ctx.fs as WriteProtectFileSystem
 }
@@ -132,5 +132,60 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
     await boot('workspace-write', ['gitdir', 'gitdir', `//${join(workspace, 'dist')}`])
     const policy = ctx.sandboxPolicy.resolve()
     expect(policy.readOnlyPaths).toEqual([join(workspace, 'gitdir'), join(workspace, 'dist')])
+  })
+})
+
+describe('WriteProtectFileSystem 额外可写根', () => {
+  it('workspace-write 下工作区外的额外根可写', async () => {
+    const extra = join(base, 'extra')
+    mkdirSync(extra)
+    await boot('workspace-write', [], ['../extra'])
+    await fs.writeText(target(join(extra, 'ok.txt')), 'hello')
+    expect(await readFile(join(extra, 'ok.txt'), 'utf8')).toBe('hello')
+  })
+
+  it('额外根内部的保护路径仍然拒绝, 其余放行', async () => {
+    const extra = join(base, 'extra')
+    mkdirSync(join(extra, 'gitdir'), { recursive: true })
+    await boot('workspace-write', [`//${join(extra, 'gitdir')}`], ['../extra'])
+    await expect(fs.writeText(target(join(extra, 'gitdir', 'config')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    await fs.writeText(target(join(extra, 'ok.txt')), 'ok')
+    expect(await readFile(join(extra, 'ok.txt'), 'utf8')).toBe('ok')
+  })
+
+  it('read-only 下额外可写根不打穿官方围栏', async () => {
+    const extra = join(base, 'extra')
+    mkdirSync(extra)
+    await boot('read-only', [], ['../extra'])
+    const error = await fs.writeText(target(join(extra, 'nope.txt')), 'x').then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    expect((error as NodeJS.ErrnoException).code).toBe('FS_SANDBOX_DENIED')
+    expect((error as Error).message).toContain('read-only mode')
+  })
+
+  it('既不在工作区也不在额外根内的写入仍被官方围栏拒绝', async () => {
+    const extra = join(base, 'extra')
+    const other = join(base, 'other')
+    mkdirSync(extra)
+    mkdirSync(other)
+    await boot('workspace-write', [], ['../extra'])
+    const error = await fs.writeText(target(join(other, 'nope.txt')), 'x').then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    expect((error as NodeJS.ErrnoException).code).toBe('FS_SANDBOX_DENIED')
+    expect((error as Error).message).toContain('workspace-write mode')
+  })
+
+  it('policy.resolve() 注入 canonical 化的 writablePaths, 工作区内条目被丢掉', async () => {
+    const extra = join(base, 'extra')
+    mkdirSync(extra)
+    await boot('workspace-write', [], ['../extra', 'src'])
+    const policy = ctx.sandboxPolicy.resolve()
+    expect(policy.writablePaths).toEqual([realpathSync(extra)])
   })
 })

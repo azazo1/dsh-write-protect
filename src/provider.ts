@@ -1,20 +1,21 @@
 /**
  * 替换 base 的 `sandbox` 行 (Linux/macOS): 官方 `LocalSandboxProvider` 的
  * runner 链, 功能探测与执法报告全部原样保留, 只在 confine() 返回之后把
- * 保护路径叠加为对 profile 的额外约束 —
- *   - bwrap: 在 `--` 分隔符之前插入 `--ro-bind <p> <p>`; 后挂载覆盖早挂载,
- *     只读 bind 叠在可写 bind 之上 (bwrap 与自定义 bwrap 兼容 runner 均适用);
- *   - Seatbelt (sandbox-exec): 在 `-p` 的 profile 文本末尾追加
- *     `(deny file-write* (subpath "..."))`, 显式 deny 收窄更早的 allow,
- *     不影响其余可写区域;
- *   - Landlock 是纯 allow-list 并集, 无法表达子路径例外; 其余无法识别的
- *     runner 同理 — 两者都只告警一次, 命令仍按官方 profile 运行.
+ * 额外可写根与保护路径叠加为对 profile 的额外约束 —
+ *   - bwrap: 在 `--` 分隔符之前先插入 `--bind <p> <p>`, 再插入
+ *     `--ro-bind <p> <p>`; 后挂载覆盖早挂载, 只读 bind 叠在可写 bind 之上;
+ *   - Seatbelt (sandbox-exec): 先追加 `(allow file-write* (subpath "..."))`,
+ *     再追加 `(deny file-write* (subpath "..."))`, 显式 deny 收窄更早的 allow;
+ *   - Landlock 是纯 allow-list 并集, 无法表达子路径例外, 但可以加 `--rw`
+ *     放宽额外可写根; 保护路径仍告警一次, 命令按官方 profile 运行.
  * Windows 不挂载本行 (保留官方 ACL provider), fs 围栏半区覆盖 write/edit 工具.
  * @module dsh-write-protect/provider
  */
 
 import { existsSync } from 'node:fs'
+import { parse as parsePath } from 'node:path'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
+import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 
 export const name = 'dsh-write-protect-provider'
@@ -24,27 +25,79 @@ function sbplString(path: string): string {
   return `"${path.replaceAll('\\', String.raw`\\`).replaceAll('"', String.raw`\"`)}"`
 }
 
+/** 文件系统根不能作为额外可写根叠加, 否则会把只读宿主根整棵翻成可写. */
+function isFilesystemRoot(path: string): boolean {
+  const canonical = canonicalPath(path)
+  return canonical === parsePath(canonical).root
+}
+
 export class WriteProtectSandboxProvider extends LocalSandboxProvider {
   private warnedUnsupported = false
 
   /**
-   * 按官方结果包装 argv 后叠加保护路径. 只在 `workspace-write` 下生效:
-   * `read-only` 的官方 profile 已全量拒绝; 保护路径来自 policy 注入的
-   * canonical 列表 (空列表直接短路).
+   * 按官方结果包装 argv 后叠加额外可写根与保护路径. 只在 `workspace-write`
+   * 下生效: `read-only` 的官方 profile 已全量拒绝, 额外可写不打穿.
    */
   override confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
     const result = super.confine(argv, policy)
     if (policy.mode !== 'workspace-write') return result
-    const paths = policy.readOnlyPaths ?? []
-    if (paths.length === 0) return result
+    const extra = policy.writablePaths ?? []
+    const protectedPaths = policy.readOnlyPaths ?? []
+    if (extra.length === 0 && protectedPaths.length === 0) return result
 
     const runner = result.argv[0]
     const separator = result.argv.indexOf('--')
     const profileArgs = separator === -1 ? result.argv.slice(1) : result.argv.slice(1, separator)
-    if (runner === 'bwrap' || profileArgs.includes('--ro-bind')) return this.withBwrapReadonly(result, paths)
-    if (runner === 'sandbox-exec') return this.withSeatbeltDenials(result, paths)
+    if (runner === 'bwrap' || profileArgs.includes('--ro-bind')) {
+      let next = result
+      if (extra.length > 0) next = this.withBwrapBinds(next, extra)
+      if (protectedPaths.length > 0) next = this.withBwrapReadonly(next, protectedPaths)
+      return next
+    }
+    if (runner === 'sandbox-exec') {
+      let next = result
+      if (extra.length > 0) next = this.withSeatbeltAllows(next, extra)
+      if (protectedPaths.length > 0) next = this.withSeatbeltDenials(next, protectedPaths)
+      return next
+    }
+    if (profileArgs.includes('--rw')) {
+      let next = result
+      if (extra.length > 0) next = this.withLandlockWritable(next, extra)
+      if (protectedPaths.length > 0) this.warnUnsupported(runner)
+      return next
+    }
     this.warnUnsupported(runner)
     return result
+  }
+
+  /** 在 `--` 之前插入一组 profile 参数. */
+  private insertBeforeSeparator(result: ConfinedArgv, args: readonly string[]): ConfinedArgv {
+    if (args.length === 0) return result
+    const separator = result.argv.indexOf('--')
+    const insertAt = separator === -1 ? result.argv.length : separator
+    return {
+      ...result,
+      argv: [...result.argv.slice(0, insertAt), ...args, ...result.argv.slice(insertAt)],
+    }
+  }
+
+  /**
+   * bwrap: 在 `--` 分隔符之前插入可写 bind 对. 后挂载覆盖早挂载, 必须出现在
+   * 保护路径的 ro-bind 之前. 宿主上不存在或解析为文件系统根的路径跳过.
+   */
+  private withBwrapBinds(result: ConfinedArgv, paths: readonly string[]): ConfinedArgv {
+    const binds: string[] = []
+    const missing: string[] = []
+    for (const path of paths) {
+      if (isFilesystemRoot(path)) continue
+      if (existsSync(path)) {
+        binds.push('--bind', path, path)
+      } else {
+        missing.push(path)
+      }
+    }
+    if (missing.length > 0) this.warnMissingWritable(missing)
+    return this.insertBeforeSeparator(result, binds)
   }
 
   /**
@@ -52,8 +105,6 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * 尚不存在的路径跳过并告警 (fs 工具半区仍会拒绝这些路径下的写入).
    */
   private withBwrapReadonly(result: ConfinedArgv, paths: readonly string[]): ConfinedArgv {
-    const separator = result.argv.indexOf('--')
-    const insertAt = separator === -1 ? result.argv.length : separator
     const binds: string[] = []
     const missing: string[] = []
     for (const path of paths) {
@@ -64,11 +115,36 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
       }
     }
     if (missing.length > 0) this.warnMissing(missing)
-    if (binds.length === 0) return result
-    return {
-      ...result,
-      argv: [...result.argv.slice(0, insertAt), ...binds, ...result.argv.slice(insertAt)],
+    return this.insertBeforeSeparator(result, binds)
+  }
+
+  /**
+   * Landlock: 在 `--` 之前插入 `--rw` 授权. 不存在或文件系统根跳过;
+   * 保护路径仍无法表达, 由调用方告警.
+   */
+  private withLandlockWritable(result: ConfinedArgv, paths: readonly string[]): ConfinedArgv {
+    const grants: string[] = []
+    const missing: string[] = []
+    for (const path of paths) {
+      if (isFilesystemRoot(path)) continue
+      if (existsSync(path)) {
+        grants.push('--rw', path)
+      } else {
+        missing.push(path)
+      }
     }
+    if (missing.length > 0) this.warnMissingWritable(missing)
+    return this.insertBeforeSeparator(result, grants)
+  }
+
+  /**
+   * Seatbelt: 在 `-p` 的 profile 文本末尾追加一条合并的 allow 形式. 随后
+   * 的 deny 仍由 withSeatbeltDenials 追加, 保护路径优先.
+   */
+  private withSeatbeltAllows(result: ConfinedArgv, paths: readonly string[]): ConfinedArgv {
+    const roots = paths.filter(path => !isFilesystemRoot(path))
+    if (roots.length === 0) return result
+    return this.appendSeatbeltForm(result, `(allow file-write* ${roots.map(path => `(subpath ${sbplString(path)})`).join(' ')})`)
   }
 
   /**
@@ -77,14 +153,19 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * 告警并保持官方结果.
    */
   private withSeatbeltDenials(result: ConfinedArgv, paths: readonly string[]): ConfinedArgv {
+    const denies = paths.map(path => `(subpath ${sbplString(path)})`).join(' ')
+    return this.appendSeatbeltForm(result, `(deny file-write* ${denies})`)
+  }
+
+  /** 把一条 SBPL 形式追加到 `-p` profile 文本末尾. */
+  private appendSeatbeltForm(result: ConfinedArgv, form: string): ConfinedArgv {
     const profileIndex = result.argv.indexOf('-p')
     if (profileIndex === -1 || profileIndex + 1 >= result.argv.length) {
       this.warnUnsupported('sandbox-exec (no -p profile argument)')
       return result
     }
-    const denies = paths.map(path => `(subpath ${sbplString(path)})`).join(' ')
     const next = [...result.argv]
-    next[profileIndex + 1] = `${next[profileIndex + 1]} (deny file-write* ${denies})`
+    next[profileIndex + 1] = `${next[profileIndex + 1]} ${form}`
     return { ...result, argv: next }
   }
 
@@ -98,6 +179,11 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
   /** bwrap 无法 ro-bind 的缺失路径: 告警并说明 write/edit 工具侧仍然受保护. */
   private warnMissing(paths: readonly string[]): void {
     this.ctx.logger?.warn?.(`dsh-write-protect: bwrap cannot ro-bind missing paths, skipped (write/edit tools still deny them): ${JSON.stringify(paths)}`)
+  }
+
+  /** bwrap / Landlock 无法授权的缺失额外可写根: 告警, fs 围栏仍会按词法放行. */
+  private warnMissingWritable(paths: readonly string[]): void {
+    this.ctx.logger?.warn?.(`dsh-write-protect: sandbox runner cannot grant missing extra writable roots, skipped (write/edit tools still allow them): ${JSON.stringify(paths)}`)
   }
 }
 

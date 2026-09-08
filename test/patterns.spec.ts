@@ -2,15 +2,17 @@
 // (安全核心之一). 展开在真实文件系统的临时工作区内验证.
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { expandReadOnlyPaths, parsePatternLines } from '../src/patterns.ts'
+import { expandReadOnlyPaths, expandWritablePaths, parsePatternLines } from '../src/patterns.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
 let ws: string
+let extra: string
 
 beforeAll(() => {
   ws = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-patterns-')))
+  extra = realpathSync(mkdtempSync(join(ws, '..', 'writable-extra-')))
   mkdirSync(join(ws, 'gitdir'))
   mkdirSync(join(ws, 'secrets'))
   mkdirSync(join(ws, 'src', 'nested'), { recursive: true })
@@ -21,6 +23,7 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(ws, { recursive: true, force: true })
+  rmSync(extra, { recursive: true, force: true })
 })
 
 describe('parsePatternLines', () => {
@@ -148,5 +151,45 @@ describe('expandReadOnlyPaths 杂项', () => {
     // `./src/nested/..` 词法归一后与 `src` 相同, 去重为一条.
     const { paths } = expandReadOnlyPaths('src\n./src/nested/..', ws)
     expect(paths).toEqual([join(ws, 'src')])
+  })
+})
+
+describe('expandWritablePaths 字面路径', () => {
+  it('相对 .. 与绝对路径展开为工作区外的 canonical 根', () => {
+    expect(expandWritablePaths(join('..', basename(extra)), ws).paths).toEqual([extra])
+    expect(expandWritablePaths(`//${extra}`, ws).paths).toEqual([extra])
+    expect(expandWritablePaths(extra, ws).paths).toEqual([extra])
+  })
+
+  it('工作区内的路径被忽略并告警', () => {
+    const { paths, warnings } = expandWritablePaths('src', ws)
+    expect(paths).toEqual([])
+    expect(warnings.some(item => item.includes('already inside the workspace'))).toBe(true)
+  })
+
+  it('文件系统根被拒绝', () => {
+    const { paths, warnings } = expandWritablePaths('/', ws)
+    expect(paths).toEqual([])
+    expect(warnings.some(item => item.includes('filesystem root'))).toBe(true)
+  })
+
+  it('通配与 ! 取反被拒绝', () => {
+    const globbed = expandWritablePaths('../writable-*', ws)
+    expect(globbed.paths).toEqual([])
+    expect(globbed.warnings.some(item => item.includes('glob metacharacters'))).toBe(true)
+    const negated = expandWritablePaths(`!${extra}`, ws)
+    expect(negated.paths).toEqual([])
+    expect(negated.warnings.some(item => item.includes('! negation'))).toBe(true)
+  })
+
+  it('去重, 注释与空行忽略', () => {
+    const { paths, warnings } = expandWritablePaths([
+      '# extra',
+      extra,
+      `//${extra}`,
+      '',
+    ].join('\n'), ws)
+    expect(paths).toEqual([extra])
+    expect(warnings).toEqual([])
   })
 })

@@ -20,8 +20,8 @@ async function setup(config: Record<string, unknown> = {}, internals: Internals 
   return sandbox
 }
 
-function ww(workspaceRoot: string, readOnlyPaths: string[]): SandboxPolicy {
-  return { mode: 'workspace-write', workspaceRoot, readOnlyPaths }
+function ww(workspaceRoot: string, readOnlyPaths: string[], writablePaths: string[] = []): SandboxPolicy {
+  return { mode: 'workspace-write', workspaceRoot, readOnlyPaths, writablePaths }
 }
 
 const BWRAP_INTERNALS: Internals = { platform: 'linux', probeBwrap: () => true }
@@ -37,8 +37,10 @@ const LANDLOCK_INTERNALS: Internals = {
 // 使用这个真实的临时工作区 (含 gitdir).
 const realWs = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-bwrap-')))
 mkdirSync(join(realWs, 'gitdir'))
+const realExtra = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-bwrap-extra-')))
 afterAll(() => {
   rmSync(realWs, { recursive: true, force: true })
+  rmSync(realExtra, { recursive: true, force: true })
 })
 
 describe('WriteProtectSandboxProvider.confine', () => {
@@ -122,5 +124,51 @@ describe('WriteProtectSandboxProvider.confine', () => {
   it('无配置时与官方 provider 行为一致 (内部探测照常)', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
     expect(sandbox.confine(['true'], ww('/ws', [])).argv[0]).toBe('bwrap')
+  })
+
+  it('bwrap: 额外可写 bind 插在保护路径 ro-bind 之前', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [realExtra]))
+    const separator = result.argv.indexOf('--')
+    expect(result.argv.slice(separator - 3, separator)).toEqual(['--ro-bind', join(realWs, 'gitdir'), join(realWs, 'gitdir')])
+    const extraBind = result.argv.lastIndexOf('--bind')
+    expect(result.argv.slice(extraBind, extraBind + 3)).toEqual(['--bind', realExtra, realExtra])
+    expect(extraBind).toBeLessThan(separator - 3)
+  })
+
+  it('bwrap: 宿主上不存在的额外可写根被跳过', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const baseline = sandbox.confine(['true'], ww(realWs, []))
+    const result = sandbox.confine(['true'], ww(realWs, [], ['/definitely-missing-dsh-wp-extra']))
+    expect(result.argv).toEqual(baseline.argv)
+  })
+
+  it('Seatbelt: 额外可写 allow 出现在保护 deny 之前', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = sandbox.confine(['true'], ww('/ws', ['/ws/gitdir'], ['/extra']))
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile).toContain('(allow file-write* (subpath "/extra"))')
+    expect(profile.endsWith('(deny file-write* (subpath "/ws/gitdir"))')).toBe(true)
+    expect(profile.lastIndexOf('(allow file-write* (subpath "/extra"))')).toBeLessThan(profile.lastIndexOf('(deny file-write* (subpath "/ws/gitdir"))'))
+  })
+
+  it('Landlock: 额外可写根加 --rw, 保护路径仍不叠加', async () => {
+    const sandbox = await setup({}, LANDLOCK_INTERNALS)
+    const baseline = sandbox.confine(['true'], ww(realWs, []))
+    const protectedOnly = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
+    expect(protectedOnly.argv).toEqual(baseline.argv)
+    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [realExtra]))
+    const separator = result.argv.indexOf('--')
+    const extraAt = result.argv.indexOf(realExtra)
+    expect(extraAt).toBeGreaterThan(-1)
+    expect(extraAt).toBeLessThan(separator)
+    expect(result.argv[extraAt - 1]).toBe('--rw')
+  })
+
+  it('read-only 模式不叠加额外可写根', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const baseline = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
+    const result = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writablePaths: ['/extra'] })
+    expect(result.argv).toEqual(baseline.argv)
   })
 })
