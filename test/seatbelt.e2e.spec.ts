@@ -4,17 +4,17 @@
 
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { WriteProtectSandboxProvider } from '../src/provider.ts'
+import { projectTmpDir } from './fixture-root.ts'
 
 describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)', () => {
-  const ws = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-wp-e2e-')))
-  mkdirSync(join(ws, '.git'))
-  const protectedDir = join(ws, '.git')
+  const ws = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-e2e-')))
+  mkdirSync(join(ws, 'gitdir'))
+  const protectedDir = join(ws, 'gitdir')
 
   afterAll(() => {
     rmSync(ws, { recursive: true, force: true })

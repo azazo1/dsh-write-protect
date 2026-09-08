@@ -2,16 +2,16 @@
 // (安全核心之一). 展开在真实文件系统的临时工作区内验证.
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { expandReadOnlyPaths, parsePatternLines } from '../src/patterns.ts'
+import { projectTmpDir } from './fixture-root.ts'
 
 let ws: string
 
 beforeAll(() => {
-  ws = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-wp-patterns-')))
-  mkdirSync(join(ws, '.git'))
+  ws = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-patterns-')))
+  mkdirSync(join(ws, 'gitdir'))
   mkdirSync(join(ws, 'secrets'))
   mkdirSync(join(ws, 'src', 'nested'), { recursive: true })
   writeFileSync(join(ws, 'secrets', 'a.pem'), 'x')
@@ -29,7 +29,7 @@ describe('parsePatternLines', () => {
       '',
       '   ',
       '# 注释行',
-      '.git/',
+      'gitdir/',
       '!  ',
       '/etc/pki',
       '//etc/pki',
@@ -39,7 +39,7 @@ describe('parsePatternLines', () => {
       'name  ',
       'with\\ space ',
     ].join('\n'))).toEqual([
-      { negated: false, dirOnly: true, anchored: false, fsAbsolute: false, segments: ['.git'], source: '.git' },
+      { negated: false, dirOnly: true, anchored: false, fsAbsolute: false, segments: ['gitdir'], source: 'gitdir' },
       { negated: false, dirOnly: false, anchored: true, fsAbsolute: false, segments: ['etc', 'pki'], source: 'etc/pki' },
       { negated: false, dirOnly: false, anchored: true, fsAbsolute: true, segments: ['etc', 'pki'], source: 'etc/pki' },
       { negated: false, dirOnly: true, anchored: true, fsAbsolute: false, segments: ['a', 'b'], source: 'a/b' },
@@ -53,14 +53,14 @@ describe('parsePatternLines', () => {
 
 describe('expandReadOnlyPaths 锚定语义', () => {
   it('不含分隔符的条目在任意层级匹配 (gitignore 非锚定语义)', () => {
-    mkdirSync(join(ws, 'src', 'nested', '.git'), { recursive: true })
-    const { paths } = expandReadOnlyPaths('.git', ws)
-    expect(paths).toEqual([join(ws, '.git'), join(ws, 'src', 'nested', '.git')])
+    mkdirSync(join(ws, 'src', 'nested', 'gitdir'), { recursive: true })
+    const { paths } = expandReadOnlyPaths('gitdir', ws)
+    expect(paths).toEqual([join(ws, 'gitdir'), join(ws, 'src', 'nested', 'gitdir')])
   })
 
   it('锚定条目只匹配工作区根下的对应路径', () => {
-    const { paths } = expandReadOnlyPaths('/.git', ws)
-    expect(paths).toEqual([join(ws, '.git')])
+    const { paths } = expandReadOnlyPaths('/gitdir', ws)
+    expect(paths).toEqual([join(ws, 'gitdir')])
   })
 
   it('锚定字面条目不存在时保留词法形态, 非锚定条目只收集存在路径', () => {
@@ -127,9 +127,9 @@ describe('expandReadOnlyPaths 取反 (last-match-wins)', () => {
   })
 
   it('锚定取反剔除深层展开结果', () => {
-    mkdirSync(join(ws, 'src', 'nested', '.git'), { recursive: true })
-    const { paths } = expandReadOnlyPaths('**/.git\n!src/nested/.git', ws)
-    expect(paths).toEqual([join(ws, '.git')])
+    mkdirSync(join(ws, 'src', 'nested', 'gitdir'), { recursive: true })
+    const { paths } = expandReadOnlyPaths('**/gitdir\n!src/nested/gitdir', ws)
+    expect(paths).toEqual([join(ws, 'gitdir')])
   })
 })
 
@@ -140,7 +140,7 @@ describe('expandReadOnlyPaths 杂项', () => {
   })
 
   it('配置行展开告警为空 (无预算问题)', () => {
-    const { warnings } = expandReadOnlyPaths('/.git\nsecrets/*', ws)
+    const { warnings } = expandReadOnlyPaths('/gitdir\nsecrets/*', ws)
     expect(warnings).toEqual([])
   })
 
