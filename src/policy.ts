@@ -27,8 +27,10 @@ export interface Config {
   /** 无会话调用与会话没有 cwd 时的回退工作区根 (缺省 `process.cwd()`). */
   workspaceRoot?: string
   /**
-   * 受保护路径部署 base (数组形态). 用户在 Web 设置页保存过 patterns 文本后
-   * 该数组不再生效; 未编辑时数组逐行合并为生效文本.
+   * 受保护路径部署 base: 每项一行 gitignore 语义模式, 数组逐行合并为生效文本.
+   * 不含 `/` 的条目任意层级匹配, 含开头或中间 `/` 的条目锚定工作区根,
+   * `//` 开头为文件系统绝对路径; `!` 按 last-match-wins 取反.
+   * 用户在 Web 设置页保存过 patterns 文本后该数组不再生效.
    */
   readOnlyPaths?: string[]
 }

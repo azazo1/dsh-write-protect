@@ -92,7 +92,7 @@ export function WriteProtectSection(
     createElement(
       'p',
       { className: 'dsh-wp-desc' },
-      '声明的路径对沙箱内的命令与 write/edit 工具只读, 读取不受影响. 模式按 gitignore 语义解析, 相对条目按当前会话的工作区解析; 保存后实时应用, 无需重启.',
+      '声明的路径对沙箱内的命令与 write/edit 工具只读, 读取不受影响. 模式按 gitignore 语义解析: 不含 / 的条目匹配任意层级, 含 / 的条目锚定当前会话工作区根; 保存后实时应用, 无需重启.',
     ),
     createElement(
       'div',
@@ -106,13 +106,14 @@ export function WriteProtectSection(
       createElement(
         'p',
         { className: 'dsh-wp-hint' },
-        '每行一条, ', createElement('code', null, '#'), ' 注释, ',
-        createElement('code', null, '!'), ' 排除 (按最后匹配生效); 含 ',
+        '每行一条, ', createElement('code', null, '#'), ' 注释, 空行忽略; ',
+        createElement('code', null, '!'), ' 排除 (按最后匹配生效, 受保护目录内部无法重新放行后代); 含 ',
         createElement('code', null, '/'), ' 的条目锚定工作区根, 其余匹配任意层级, ',
         createElement('code', null, '//'), ' 开头为文件系统绝对路径; 支持 ',
         createElement('code', null, '*'), ', ', createElement('code', null, '?'), ', ',
-        createElement('code', null, '[...]'), ' 与 ', createElement('code', null, '**'),
-        ' 通配, 尾部 ', createElement('code', null, '/'), ' 仅匹配目录. 示例: ',
+        createElement('code', null, '[...]'), ' 与独立成段的 ', createElement('code', null, '**'),
+        ' 通配, 尾部 ', createElement('code', null, '/'), ' 仅匹配目录, ',
+        createElement('code', null, '\\'), ' 转义下一字符. 通配只匹配已存在的路径. 示例: ',
         createElement('code', null, 'vendor'), ', ', createElement('code', null, 'secrets/*.pem'),
         ', ', createElement('code', null, '!secrets/example.pem'),
         '. 清空全部条目即停用保护.',
