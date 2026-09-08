@@ -52,6 +52,7 @@ describe('client bundle loader 注册', () => {
     })
     expect(moduleExports.inject).toContain('settingsScope')
     expect(moduleExports.inject).toContain('slots')
+    expect(moduleExports.inject).toContain('sessions')
     expect(typeof moduleExports.apply).toBe('function')
   })
 
@@ -68,5 +69,7 @@ describe('client bundle loader 注册', () => {
     expect(code).toContain('预览')
     expect(code).toContain('返回编辑')
     expect(code).toContain('未生效')
+    expect(code).toContain('当前会话')
+    expect(code).toContain('workspaceRoot')
   })
 })

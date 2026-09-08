@@ -30,6 +30,8 @@ export interface ReactRuntime {
 export interface WriteProtectSectionProps {
   close?: () => void
   scope: WriteProtectScope
+  /** 当前选中会话的 cwd; 没有选中会话时返回 undefined, 预览走部署回退根. */
+  workspaceRootOf?: () => string | undefined
 }
 
 const STYLE_ID = 'dsh-write-protect-section'
@@ -71,7 +73,7 @@ export function WriteProtectSection(
   React: ReactRuntime,
   props: WriteProtectSectionProps,
 ): ReturnType<ReactRuntime['createElement']> {
-  const { scope } = props
+  const { scope, workspaceRootOf } = props
   const { createElement, useState, useSyncExternalStore } = React
   const savedPatterns = useSyncExternalStore(
     listener => scope.subscribe(listener),
@@ -97,11 +99,16 @@ export function WriteProtectSection(
   const onPreview = (): void => {
     setPreviewing(true)
     setPreviewError('')
+    const workspaceRoot = workspaceRootOf?.()
     void fetch(PREVIEW_PATH, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ patterns: patternsValue, writablePatterns: writableValue }),
+      body: JSON.stringify({
+        patterns: patternsValue,
+        writablePatterns: writableValue,
+        ...workspaceRoot === undefined ? {} : { workspaceRoot },
+      }),
     }).then(async (response) => {
       const text = await response.text()
       if (text.length === 0) throw new Error(`preview failed (${String(response.status)}, empty body)`)
@@ -115,8 +122,12 @@ export function WriteProtectSection(
       if (typeof payload.workspaceRoot !== 'string' || !Array.isArray(payload.readOnly) || !Array.isArray(payload.writable) || !Array.isArray(payload.warnings)) {
         throw new Error('preview response is malformed')
       }
+      const workspaceSource = payload.workspaceSource === 'session' || payload.workspaceSource === 'fallback'
+        ? payload.workspaceSource
+        : undefined
       setPreview({
         workspaceRoot: payload.workspaceRoot,
+        workspaceSource,
         readOnly: payload.readOnly.filter(item => typeof item === 'string'),
         writable: payload.writable.filter(item => typeof item === 'string'),
         warnings: payload.warnings.filter(item => typeof item === 'string'),
@@ -210,7 +221,7 @@ export function WriteProtectSection(
     createElement(
       'p',
       { className: 'dsh-wp-desc' },
-      '保护路径对沙箱内的命令与 write/edit 工具只读; 额外可写根只在 workspace-write 下把工作区外的目录并进 allow-list, 不打穿 read-only. 保护路径优先. 保存后实时应用, 无需重启. 预览按部署工作区根展开当前草稿, 不必先保存.',
+      '保护路径对沙箱内的命令与 write/edit 工具只读; 额外可写根只在 workspace-write 下把工作区外的目录并进 allow-list, 不打穿 read-only. 保护路径优先. 保存后实时应用, 无需重启. 预览按当前会话 cwd 展开当前草稿, 不必先保存.',
     ),
     view === 'preview' && preview !== null ? WriteProtectPreviewPanel(React, preview) : editors,
     createElement(
@@ -254,6 +265,7 @@ export function mountWriteProtectSection(
   ctx: ClientContext,
   React: ReactRuntime,
   scope: WriteProtectScope,
+  workspaceRootOf: () => string | undefined,
 ): void {
   installStyles()
   ctx.slots.inject('settings.section', () => ctx.slots.register(
@@ -262,7 +274,7 @@ export function mountWriteProtectSection(
       id: PLUGIN_ID,
       order: 100,
       label: '写入保护',
-      inject: () => ({ scope }),
+      inject: () => ({ scope, workspaceRootOf }),
     },
     (props: WriteProtectSectionProps) => WriteProtectSection(React, props),
   ))

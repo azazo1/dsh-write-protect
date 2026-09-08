@@ -122,6 +122,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
 
     ctx.inject(['connection'], (scope: Context) => {
       const connection = (scope as Context & { connection: PreviewConnection }).connection
+      // 部署回退根: 请求体没带当前会话 cwd 时才用.
       scope.effect(
         () => mountPreviewRoute(connection, this.workspaceRoot),
         'dsh-write-protect: preview route',

@@ -15,6 +15,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../constants.ts'
 import { mountWriteProtectSection, type WriteProtectScope } from './section.ts'
+import { sessionCwdOf, type SessionsLike } from './session-cwd.ts'
 
 /** banner 注入的 loader require: react 等外部模块的唯一解析通道. */
 declare const require: (id: string) => unknown
@@ -39,8 +40,12 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   return decoded.patterns === undefined && decoded.writablePatterns === undefined ? undefined : decoded
 }
 
-/** 页面依赖的服务: settingsScope 提供配置通道, slots 提供注册面. */
-export const inject = ['settingsScope', 'slots']
+/** 页面依赖的服务: settingsScope 提供配置通道, slots 提供注册面, sessions 提供当前 cwd. */
+export const inject = ['settingsScope', 'slots', 'sessions']
+
+function sessionsOf(ctx: ClientContext): SessionsLike | undefined {
+  return (ctx as ClientContext & { sessions?: SessionsLike }).sessions
+}
 
 /** 注册独立配置页. */
 export function apply(ctx: ClientContext): void {
@@ -49,5 +54,5 @@ export function apply(ctx: ClientContext): void {
     decode: decodeWriteProtectSettings,
   }) as unknown as WriteProtectScope
 
-  mountWriteProtectSection(ctx, React, scope)
+  mountWriteProtectSection(ctx, React, scope, () => sessionCwdOf(sessionsOf(ctx)))
 }

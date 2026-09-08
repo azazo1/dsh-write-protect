@@ -42,6 +42,11 @@ export const PREVIEW_PATH = '/api/dsh-write-protect.preview'
 /** 设置页预览请求/响应: 展开后的生效路径与未生效原因. */
 export interface PathPreview {
   workspaceRoot: string
+  /**
+   * 工作区根来源. `session` 是当前选中会话的 cwd, `fallback` 是部署回退根
+   * (通常是 `dsh web` 的启动路径). 缺省按 fallback 展示.
+   */
+  workspaceSource?: 'session' | 'fallback'
   readOnly: readonly string[]
   writable: readonly string[]
   warnings: readonly string[]
