@@ -286,9 +286,11 @@ function statIsDirBudgeted(path: string, budget: NodeBudget): boolean | null {
 }
 
 /**
- * 枚举一个条目在 `start` 下匹配的现有路径 (POSIX 形态词法路径). `**` 段按
- * 零或多层目录递归, 字面段直接拼接并以存在性剪枝, 其余段用 readdir 过滤
- * (非末段要求目录), 末段按 `dirOnly` 过滤.
+ * 枚举一个条目在 `start` 下匹配的现有路径 (POSIX 形态词法路径). 按队列
+ * 广度优先: 同一深度的候选先于更深的子目录消耗预算, 避免 `**` 先钻进
+ * node_modules 把浅层命中漏掉. `**` 段按零或多层目录展开, 字面段直接
+ * 拼接并以存在性剪枝, 其余段用 readdir 过滤 (非末段要求目录), 末段按
+ * `dirOnly` 过滤.
  */
 function collectGlobMatches(
   effective: readonly string[],
@@ -299,65 +301,67 @@ function collectGlobMatches(
 ): { paths: Candidate[], exhausted: boolean } {
   const matches: Candidate[] = []
   let exhausted = false
+  const queue: { current: string, index: number }[] = [{ current: start, index: 0 }]
+  let head = 0
 
-  const walk = (current: string, index: number): void => {
-    const segment = effective[index]!
-    const matcher = matchers[index]!
-    const last = index === effective.length - 1
-    if (matcher === null) {
-      // `**` 段: 先按匹配零段处理, 再递归每个现存子目录.
-      walk(current, index + 1)
+  try {
+    while (head < queue.length) {
+      const { current, index } = queue[head]!
+      head += 1
+      const segment = effective[index]!
+      const matcher = matchers[index]!
+      const last = index === effective.length - 1
+      if (matcher === null) {
+        // `**` 段: 先把 "匹配零段" 入队, 再把现存子目录入队, FIFO 保证浅层先出.
+        queue.push({ current, index: index + 1 })
+        budget.spend()
+        let names: string[]
+        try {
+          names = readdirSync(current)
+        } catch {
+          continue
+        }
+        for (const name of names) {
+          const child = `${current}/${name}`
+          budget.spend()
+          if (statIsDirBudgeted(child, budget) !== true) continue
+          queue.push({ current: child, index })
+        }
+        continue
+      }
+      if (isLiteralSegment(segment)) {
+        const next = `${current}/${segment}`
+        if (!last) {
+          budget.spend()
+          if (existsSync(next)) queue.push({ current: next, index: index + 1 })
+          continue
+        }
+        const isDir = statIsDirBudgeted(next, budget)
+        if (isDir === null || (dirOnly && !isDir)) continue
+        matches.push({ path: next, isDir })
+        continue
+      }
       budget.spend()
       let names: string[]
       try {
         names = readdirSync(current)
       } catch {
-        return
-      }
-      for (const name of names) {
-        const child = `${current}/${name}`
-        budget.spend()
-        if (statIsDirBudgeted(child, budget) !== true) continue
-        walk(child, index)
-      }
-      return
-    }
-    if (isLiteralSegment(segment)) {
-      const next = `${current}/${segment}`
-      if (!last) {
-        budget.spend()
-        if (existsSync(next)) walk(next, index + 1)
-        return
-      }
-      const isDir = statIsDirBudgeted(next, budget)
-      if (isDir === null || (dirOnly && !isDir)) return
-      matches.push({ path: next, isDir })
-      return
-    }
-    budget.spend()
-    let names: string[]
-    try {
-      names = readdirSync(current)
-    } catch {
-      return
-    }
-    for (const name of names) {
-      if (!matcher.test(name)) continue
-      const next = `${current}/${name}`
-      if (!last) {
-        budget.spend()
-        if (statIsDirBudgeted(next, budget) !== true) continue
-        walk(next, index + 1)
         continue
       }
-      const isDir = statIsDirBudgeted(next, budget)
-      if (isDir === null || (dirOnly && !isDir)) continue
-      matches.push({ path: next, isDir })
+      for (const name of names) {
+        if (!matcher.test(name)) continue
+        const next = `${current}/${name}`
+        if (!last) {
+          budget.spend()
+          if (statIsDirBudgeted(next, budget) !== true) continue
+          queue.push({ current: next, index: index + 1 })
+          continue
+        }
+        const isDir = statIsDirBudgeted(next, budget)
+        if (isDir === null || (dirOnly && !isDir)) continue
+        matches.push({ path: next, isDir })
+      }
     }
-  }
-
-  try {
-    walk(start, 0)
   } catch (error) {
     if (!(error instanceof BudgetExceeded)) throw error
     // 预算耗尽: 停止枚举, 已收集的部分仍然有效, 由调用方补充告警.
