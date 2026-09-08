@@ -323,6 +323,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: 下载构建产物
         uses: actions/download-artifact@v4
@@ -336,19 +337,20 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: 安装支持 OIDC 的 npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g npm@11
+          npm --version
+
       - name: 发布 npm 包
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
           TAG_NAME: ${{ needs.version.outputs.tag_name }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-            echo "NPM_PUBLISH_ENABLED=true 但未配置 secrets.NPM_TOKEN" >&2
-            exit 1
-          fi
-
           tarball="$PWD/dist/dsh-write-protect-$VERSION.tgz"
           test -s "$tarball"
           ls -l dist
@@ -382,5 +384,5 @@ jobs:
             fi
           fi
 
-          echo "publishing $tarball with dist-tag $npm_tag"
+          echo "publishing $tarball with dist-tag $npm_tag via OIDC"
           npm publish "$tarball" --access public --tag "$npm_tag"
