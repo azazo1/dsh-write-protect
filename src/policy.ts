@@ -35,6 +35,7 @@ export interface Config {
   readOnlyPaths?: string[]
   /**
    * 额外可写根部署 base: 每项一行字面路径, 数组逐行合并为生效文本.
+   * 行首 `~` / `~/...` 为当前用户家目录, `$NAME` / `${NAME}` 为环境变量;
    * `//` 或宿主绝对路径按文件系统解析, 其余相对当前工作区 (含 `..`).
    * 只在 `workspace-write` 下并进 allow-list, 不打穿 `read-only`;
    * 保护路径优先. 用户保存过 writablePatterns 文本后该数组不再生效.

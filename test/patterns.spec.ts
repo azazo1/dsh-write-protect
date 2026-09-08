@@ -2,8 +2,10 @@
 // (安全核心之一). 展开在真实文件系统的临时工作区内验证.
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import { expandReadOnlyPaths, expandWritablePaths, parsePatternLines } from '../src/patterns.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
@@ -191,5 +193,33 @@ describe('expandWritablePaths 字面路径', () => {
     ].join('\n'), ws)
     expect(paths).toEqual([extra])
     expect(warnings).toEqual([])
+  })
+
+  it('行首 ~ 与 ~/... 展开为当前用户家目录', () => {
+    expect(expandWritablePaths('~', ws).paths).toEqual([canonicalPath(homedir())])
+    expect(expandWritablePaths('~/dsh-wp-tilde-missing', ws).paths).toEqual([
+      canonicalPath(join(homedir(), 'dsh-wp-tilde-missing')),
+    ])
+  })
+
+  it('$NAME 与 ${NAME} 展开为环境变量', () => {
+    const key = 'DSH_WP_EXTRA_ROOT'
+    process.env[key] = extra
+    try {
+      expect(expandWritablePaths(`$${key}`, ws).paths).toEqual([extra])
+      expect(expandWritablePaths(`\${${key}}`, ws).paths).toEqual([extra])
+    } finally {
+      delete process.env[key]
+    }
+  })
+
+  it('~user 与未设置的环境变量整行丢弃', () => {
+    const other = expandWritablePaths('~otheruser/scratch', ws)
+    expect(other.paths).toEqual([])
+    expect(other.warnings.some(item => item.includes('only ~ and ~/...'))).toBe(true)
+    delete process.env.DSH_WP_UNSET_ROOT
+    const unset = expandWritablePaths('$DSH_WP_UNSET_ROOT', ws)
+    expect(unset.paths).toEqual([])
+    expect(unset.warnings.some(item => item.includes('unset or empty'))).toBe(true)
   })
 })

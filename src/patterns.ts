@@ -20,6 +20,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import { EXPAND_NODE_BUDGET } from './constants.ts'
+import { expandTildeAndEnv } from './path-expand.ts'
 
 /** 一条解析后的配置行. */
 export interface PatternEntry {
@@ -525,10 +526,11 @@ function isLexicallyUnderRoot(path: string, root: string): boolean {
 
 /**
  * 把额外可写配置文本展开为 canonical 根. 与保护路径不同, 这里是字面路径
- * 列表而不是 gitignore glob: `//` 或宿主绝对路径按文件系统解析, 其余相对
- * 当前工作区 (含 `..`). 工作区内的条目没有放宽效果, 文件系统根拒绝;
- * 不存在的路径仍保留词法形态 (fs / Seatbelt 可按前缀放行, bwrap / Landlock
- * 在叠加时跳过).
+ * 列表而不是 gitignore glob: 行首 `~` / `~/...` 展开为当前用户家目录,
+ * `$NAME` / `${NAME}` 展开为环境变量; `//` 或宿主绝对路径按文件系统解析,
+ * 其余相对当前工作区 (含 `..`). 工作区内的条目没有放宽效果, 文件系统根
+ * 拒绝; 不存在的路径仍保留词法形态 (fs / Seatbelt 可按前缀放行, bwrap /
+ * Landlock 在叠加时跳过).
  * @param text - 逐行一条字面路径的配置文本.
  * @param workspaceRoot - 本次调用的工作区根.
  * @returns canonical 额外可写根 (去重) 与告警列表.
@@ -546,18 +548,23 @@ export function expandWritablePaths(text: string, workspaceRoot: string): Expand
       warnings.push(`writable path "${line}" uses ! negation; extra writable roots are a literal list`)
       continue
     }
-    if (hasUnescapedGlobMeta(line)) {
+    const expanded = expandTildeAndEnv(line)
+    if ('error' in expanded) {
+      warnings.push(`writable path "${line}" ${expanded.error}`)
+      continue
+    }
+    if (hasUnescapedGlobMeta(expanded.ok)) {
       warnings.push(`writable path "${line}" contains glob metacharacters; extra writable roots must be literal paths`)
       continue
     }
 
     let resolved: string
-    if (line.startsWith('//')) {
-      resolved = resolvePath('/', line.slice(2))
-    } else if (isAbsolute(line)) {
-      resolved = resolvePath(line)
+    if (expanded.ok.startsWith('//')) {
+      resolved = resolvePath('/', expanded.ok.slice(2))
+    } else if (isAbsolute(expanded.ok)) {
+      resolved = resolvePath(expanded.ok)
     } else {
-      resolved = resolvePath(workspaceRoot, line)
+      resolved = resolvePath(workspaceRoot, expanded.ok)
     }
 
     if (isFilesystemRoot(resolved)) {
