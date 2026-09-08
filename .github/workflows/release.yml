@@ -349,8 +349,9 @@ jobs:
             exit 1
           fi
 
-          tarball="dist/dsh-write-protect-$VERSION.tgz"
+          tarball="$PWD/dist/dsh-write-protect-$VERSION.tgz"
           test -s "$tarball"
+          ls -l dist
 
           expected_tag="v$VERSION"
           if [[ "$TAG_NAME" != "$expected_tag" ]]; then
