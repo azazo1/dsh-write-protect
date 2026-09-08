@@ -27,6 +27,7 @@ verify:
     just test
     pnpm pack --dry-run
 
-# 删除生成的构建产物.
+# 删除 node_modules 和 .tmp .
 clean:
-    rm -rf lib
+    rm -rf .tmp/
+    rm -rf node_modules/
