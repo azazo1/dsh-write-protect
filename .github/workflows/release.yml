@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的已有 tag, 留空时只构建并上传 artifact"
+        description: "要发布的已有 tag, 留空时只跑检查并打包, 不创建 Release"
         required: false
         type: string
 
@@ -144,21 +144,21 @@ jobs:
           test -s cordis.patch.yml
           echo "plugin 入口与 patch 完整"
 
-      - name: 打包发布产物
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.version.outputs.is_release == 'true' }}
+      - name: 打包并校验发布产物
         shell: bash
         run: |
           set -euo pipefail
-          pnpm pack --pack-destination dist
-          ls -l dist
+          node scripts/pack-plugin.mjs
+          test -s dist/dsh-write-protect.tgz
           test -s dist/dsh-write-protect-*.tgz
 
       - name: 上传构建产物
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.version.outputs.is_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: dsh-write-protect
-          path: dist/dsh-write-protect-*.tgz
+          path: |
+            dist/dsh-write-protect-*.tgz
+            dist/dsh-write-protect.tgz
           if-no-files-found: error
           retention-days: 14
 
@@ -263,14 +263,19 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           cd release-artifacts
-          archives=(dsh-write-protect-*.tgz)
+          versioned=(dsh-write-protect-*.tgz)
+          stable=dsh-write-protect.tgz
 
-          if (( ${#archives[@]} != 1 )); then
-            echo "预期 1 个归档, 实际找到 ${#archives[@]} 个" >&2
+          if (( ${#versioned[@]} != 1 )); then
+            echo "预期 1 个带版本号的归档, 实际找到 ${#versioned[@]} 个" >&2
+            exit 1
+          fi
+          if [[ ! -s "$stable" ]]; then
+            echo "缺少稳定文件名归档: $stable" >&2
             exit 1
           fi
 
-          sha256sum "${archives[@]}" > SHA256SUMS
+          sha256sum "${versioned[0]}" "$stable" > SHA256SUMS
 
       - name: 创建或更新 GitHub Release
         env:
@@ -283,11 +288,12 @@ jobs:
           shopt -s nullglob
           assets=(
             release-artifacts/dsh-write-protect-*.tgz
+            release-artifacts/dsh-write-protect.tgz
             release-artifacts/SHA256SUMS
           )
 
-          if (( ${#assets[@]} != 2 )); then
-            echo "预期 2 个发布文件, 实际找到 ${#assets[@]} 个" >&2
+          if (( ${#assets[@]} != 3 )); then
+            echo "预期 3 个发布文件, 实际找到 ${#assets[@]} 个" >&2
             exit 1
           fi
 
@@ -310,3 +316,70 @@ jobs:
               --notes-file release-notes.md \
               "${prerelease_args[@]}"
           fi
+
+  npm:
+    if: needs.version.outputs.is_release == 'true' && vars.NPM_PUBLISH_ENABLED == 'true'
+    needs: [version, build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-write-protect
+          path: dist
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: 发布 npm 包
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG_NAME: ${{ needs.version.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "NPM_PUBLISH_ENABLED=true 但未配置 secrets.NPM_TOKEN" >&2
+            exit 1
+          fi
+
+          tarball="dist/dsh-write-protect-$VERSION.tgz"
+          test -s "$tarball"
+
+          expected_tag="v$VERSION"
+          if [[ "$TAG_NAME" != "$expected_tag" ]]; then
+            echo "tag $TAG_NAME 与包版本 $VERSION 不一致" >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *-* ]]; then
+            npm_tag=next
+          else
+            npm_tag=latest
+            current="$(npm view dsh-write-protect dist-tags.latest 2>/dev/null || true)"
+            if [[ -n "$current" ]]; then
+              node --input-type=module -e '
+                const next = process.argv[1]
+                const current = process.argv[2]
+                const parse = (value) => value.split("-")[0].split(".").map(Number)
+                const a = parse(next)
+                const b = parse(current)
+                for (let i = 0; i < 3; i += 1) {
+                  if ((a[i] ?? 0) < (b[i] ?? 0)) {
+                    console.error(`拒绝把 latest 从 ${current} 回退到 ${next}`)
+                    process.exit(1)
+                  }
+                  if ((a[i] ?? 0) > (b[i] ?? 0)) process.exit(0)
+                }
+              ' "$VERSION" "$current"
+            fi
+          fi
+
+          echo "publishing $tarball with dist-tag $npm_tag"
+          npm publish "$tarball" --access public --tag "$npm_tag"

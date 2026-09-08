@@ -20,12 +20,16 @@ build:
 test:
     pnpm test
 
-# 类型检查, 构建, 测试和打包预览一次完成.
+# 打包 npm tarball 到 dist/, 并校验市场安装所需的入口.
+pack:
+    node scripts/pack-plugin.mjs
+
+# 类型检查, 构建, 测试和打包校验一次完成.
 verify:
     just typecheck
     just build
     just test
-    pnpm pack --dry-run
+    just pack
 
 # 删除 node_modules 和 .tmp .
 clean:

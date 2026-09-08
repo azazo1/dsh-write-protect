@@ -18,6 +18,12 @@ dsh plugin --profile web add azazo1/dsh-write-protect
 dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.0
 ```
 
+GitHub Release 同时挂不带版本号的预构建包, 安装时跳过 `allowBuilds`:
+
+```shell
+dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/releases/latest/download/dsh-write-protect.tgz
+```
+
 安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`.
 
 ## 配置

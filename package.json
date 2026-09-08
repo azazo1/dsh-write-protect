@@ -44,6 +44,17 @@
     "read-only"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/azazo1/dsh-write-protect.git"
+  },
+  "homepage": "https://github.com/azazo1/dsh-write-protect#readme",
+  "bugs": {
+    "url": "https://github.com/azazo1/dsh-write-protect/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20.11"
   },
