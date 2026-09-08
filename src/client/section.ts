@@ -9,7 +9,8 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../constants.ts'
+import { PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
+import { WriteProtectPreviewPanel } from './preview-panel.ts'
 
 /** 组件对 settings scope 的最小结构视图 (避免耦合具体包的类型导出). */
 export interface WriteProtectScope {
@@ -34,7 +35,8 @@ export interface WriteProtectSectionProps {
 const STYLE_ID = 'dsh-write-protect-section'
 
 const CSS_TEXT = `
-.dsh-wp-section { max-width: 760px; display: flex; flex-direction: column; gap: 12px; }
+.dsh-wp-section, .dsh-wp-edit { max-width: 760px; display: flex; flex-direction: column; gap: 12px; }
+.dsh-wp-edit { max-width: none; }
 .dsh-wp-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--dsw-alias-label-primary); }
 .dsh-wp-desc { margin: 0; font-size: 13px; line-height: 1.6; color: var(--dsw-alias-label-tertiary); }
 .dsh-wp-card { display: flex; flex-direction: column; gap: 8px; background: var(--dsw-alias-bg-layer-3); border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; padding: 12px; }
@@ -49,6 +51,9 @@ const CSS_TEXT = `
 .dsh-wp-btn:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary); }
 .dsh-wp-btn:disabled { opacity: 0.45; cursor: default; }
 .dsh-wp-status { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.dsh-wp-list { margin: 0; padding: 0 0 0 18px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-primary); }
+.dsh-wp-empty { margin: 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.dsh-wp-preview-label { margin: 8px 0 4px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); }
 `
 
 /** 注入页面样式 (data-plugin-css 标记防止重复插入). */
@@ -80,10 +85,42 @@ export function WriteProtectSection(
   const [patternsDraft, setPatternsDraft] = useState<string | null>(null)
   const [writableDraft, setWritableDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [view, setView] = useState<'edit' | 'preview'>('edit')
+  const [previewing, setPreviewing] = useState(false)
+  const [preview, setPreview] = useState<PathPreview | null>(null)
+  const [previewError, setPreviewError] = useState('')
   const patternsValue = patternsDraft ?? savedPatterns
   const writableValue = writableDraft ?? savedWritable
   const dirty = (patternsDraft !== null && patternsDraft !== savedPatterns)
     || (writableDraft !== null && writableDraft !== savedWritable)
+
+  const onPreview = (): void => {
+    setPreviewing(true)
+    setPreviewError('')
+    void fetch(PREVIEW_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ patterns: patternsValue, writablePatterns: writableValue }),
+    }).then(async (response) => {
+      const payload = await response.json() as { error?: string } & Partial<PathPreview>
+      if (!response.ok) throw new Error(payload.error ?? `preview failed (${String(response.status)})`)
+      if (typeof payload.workspaceRoot !== 'string' || !Array.isArray(payload.readOnly) || !Array.isArray(payload.writable) || !Array.isArray(payload.warnings)) {
+        throw new Error('preview response is malformed')
+      }
+      setPreview({
+        workspaceRoot: payload.workspaceRoot,
+        readOnly: payload.readOnly.filter(item => typeof item === 'string'),
+        writable: payload.writable.filter(item => typeof item === 'string'),
+        warnings: payload.warnings.filter(item => typeof item === 'string'),
+      })
+      setView('preview')
+    }).catch((error: unknown) => {
+      setPreviewError(error instanceof Error ? error.message : String(error))
+    }).then(() => {
+      setPreviewing(false)
+    })
+  }
 
   const onSave = (): void => {
     if (!dirty) return
@@ -98,15 +135,9 @@ export function WriteProtectSection(
     })
   }
 
-  return createElement(
-    'section',
-    { className: 'dsh-wp-section' },
-    createElement('h2', { className: 'dsh-wp-title' }, '写入保护'),
-    createElement(
-      'p',
-      { className: 'dsh-wp-desc' },
-      '保护路径对沙箱内的命令与 write/edit 工具只读; 额外可写根只在 workspace-write 下把工作区外的目录并进 allow-list, 不打穿 read-only. 保护路径优先. 保存后实时应用, 无需重启.',
-    ),
+  const editors = createElement(
+    'div',
+    { className: 'dsh-wp-edit' },
     createElement(
       'div',
       { className: 'dsh-wp-card' },
@@ -155,19 +186,50 @@ export function WriteProtectSection(
         ') 相对当前会话工作区. 工作区内的路径本来就可写, 会被忽略; 文件系统根会被拒绝. 保护路径仍然优先. 清空即不额外放行. Windows 上仅 write/edit 工具生效, bash 仍受官方 ACL 限制.',
       ),
     ),
+  )
+
+  const status = previewError !== ''
+    ? previewError
+    : previewing
+      ? '正在展开...'
+      : dirty
+        ? '有未保存的更改'
+        : ''
+
+  return createElement(
+    'section',
+    { className: 'dsh-wp-section' },
+    createElement('h2', { className: 'dsh-wp-title' }, '写入保护'),
+    createElement(
+      'p',
+      { className: 'dsh-wp-desc' },
+      '保护路径对沙箱内的命令与 write/edit 工具只读; 额外可写根只在 workspace-write 下把工作区外的目录并进 allow-list, 不打穿 read-only. 保护路径优先. 保存后实时应用, 无需重启. 预览按部署工作区根展开当前草稿, 不必先保存.',
+    ),
+    view === 'preview' && preview !== null ? WriteProtectPreviewPanel(React, preview) : editors,
     createElement(
       'div',
       { className: 'dsh-wp-actions' },
+      view === 'preview'
+        ? createElement(
+          'button',
+          { className: 'dsh-wp-btn', disabled: previewing, onClick: () => setView('edit') },
+          '返回编辑',
+        )
+        : createElement(
+          'button',
+          { className: 'dsh-wp-btn', disabled: previewing || saving, onClick: onPreview },
+          previewing ? '展开中...' : '预览',
+        ),
       createElement(
         'button',
-        { className: 'dsh-wp-btn', disabled: !dirty || saving, onClick: onSave },
+        { className: 'dsh-wp-btn', disabled: !dirty || saving || previewing, onClick: onSave },
         saving ? '保存中...' : '保存',
       ),
       createElement(
         'button',
         {
           className: 'dsh-wp-btn',
-          disabled: !dirty || saving,
+          disabled: !dirty || saving || previewing || view === 'preview',
           onClick: () => {
             setPatternsDraft(null)
             setWritableDraft(null)
@@ -175,7 +237,7 @@ export function WriteProtectSection(
         },
         '放弃更改',
       ),
-      createElement('span', { className: 'dsh-wp-status' }, dirty ? '有未保存的更改' : ''),
+      createElement('span', { className: 'dsh-wp-status' }, status),
     ),
   )
 }

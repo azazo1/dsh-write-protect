@@ -17,6 +17,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS, PATTERNS_FIELD, PLUGIN_ID, PROMPT_CONTEXT_ORDER, WRITABLE_FIELD } from './constants.ts'
 import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
+import { mountPreviewRoute, type PreviewConnection, type PreviewWebServer } from './preview-route.ts'
 
 export const name = 'dsh-write-protect-policy'
 
@@ -117,6 +118,15 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           return parts.join(' ')
         },
       })
+    })
+
+    ctx.inject(['webServer'], (scope: Context) => {
+      const server = (scope as Context & { webServer: PreviewWebServer }).webServer
+      const connection = (scope as Context & { connection?: PreviewConnection }).connection
+      scope.effect(
+        () => mountPreviewRoute(server, this.workspaceRoot, connection),
+        'dsh-write-protect: preview route',
+      )
     })
   }
 

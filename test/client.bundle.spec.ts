@@ -65,5 +65,8 @@ describe('client bundle loader 注册', () => {
     expect(code).toContain('不打穿 read-only')
     expect(code).toContain('当前用户家目录')
     expect(code).toContain('$NAME')
+    expect(code).toContain('预览')
+    expect(code).toContain('返回编辑')
+    expect(code).toContain('未生效')
   })
 })

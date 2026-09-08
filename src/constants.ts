@@ -36,6 +36,17 @@ export const PROMPT_CONTEXT_ORDER = 112
 /** 单次 glob 展开的遍历节点预算, 防止 `**` 模式在超大目录树上失控. */
 export const EXPAND_NODE_BUDGET = 5000
 
+/** 设置页预览的 Host 路由. 相对当前 Web origin, POST JSON. */
+export const PREVIEW_PATH = '/dsh-write-protect/preview'
+
+/** 设置页预览请求/响应: 展开后的生效路径与未生效原因. */
+export interface PathPreview {
+  workspaceRoot: string
+  readOnly: readonly string[]
+  writable: readonly string[]
+  warnings: readonly string[]
+}
+
 /**
  * 为逐次调用的沙箱 policy 追加解析后的保护路径与额外可写根. 官方 policy
  * 类型不做改动, 这个接口合并让每个消费方都能直接读 `policy.readOnlyPaths`
