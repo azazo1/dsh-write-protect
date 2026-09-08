@@ -1,6 +1,6 @@
 /**
  * 替换 base 的 `sandbox-policy` 行: 在官方 `SandboxPolicyService` 之上增加
- * `readOnlyPaths` — 保护路径以 gitignore 风格的多行文本声明 (见
+ * `readOnlyPaths` — 保护路径以 gitignore 语义的多行文本声明 (见
  * `patterns.ts`), 来源按优先级取值: Web 设置页编辑过的用户配置 (settings
  * namespace 的 patterns 字段) 覆盖 patch 配置的 `readOnlyPaths` 数组 (部署
  * base). 解析结果带 TTL 缓存, 每次 resolve() 注入逐次调用的 policy, 作为

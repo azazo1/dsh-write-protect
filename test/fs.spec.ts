@@ -63,8 +63,8 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
     expect((error as Error).message).toContain('dsh-write-protect')
   })
 
-  it('保护目录尚不存在时仍按词法通道拒绝', async () => {
-    await boot('workspace-write', ['.git'])
+  it('锚定条目指向的路径尚不存在时仍按词法通道拒绝', async () => {
+    await boot('workspace-write', ['/.git'])
     await expect(fs.writeText(target(join(workspace, '.git', 'config')), 'x')).rejects.toMatchObject({
       code: 'FS_SANDBOX_DENIED',
     })
@@ -119,15 +119,16 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
   })
 
   it('配置的工作区内子文件保护路径同样生效', async () => {
-    await boot('workspace-write', ['keystore.bin'])
     writeFileSync(join(workspace, 'keystore.bin'), 'seed')
+    await boot('workspace-write', ['keystore.bin'])
     await expect(fs.writeText(target(join(workspace, 'keystore.bin')), 'x')).rejects.toMatchObject({
       code: 'FS_SANDBOX_DENIED',
     })
   })
 
   it('policy.resolve() 注入 canonical 化且去重的 readOnlyPaths', async () => {
-    await boot('workspace-write', ['.git', '.git', join(workspace, 'dist')])
+    mkdirSync(join(workspace, '.git'))
+    await boot('workspace-write', ['.git', '.git', `//${join(workspace, 'dist')}`])
     const policy = ctx.sandboxPolicy.resolve()
     expect(policy.readOnlyPaths).toEqual([join(workspace, '.git'), join(workspace, 'dist')])
   })

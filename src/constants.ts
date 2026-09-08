@@ -13,6 +13,8 @@ export const PATTERNS_FIELD = 'patterns'
 /**
  * 保护路径的唯一默认来源: patch 配置 `readOnlyPaths` 的 schema 默认值与
  * 设置页展示的部署 base 都由它推导. 修改默认保护范围只需改这一处.
+ * gitignore 语义下 `.git` 在任意层级匹配, 覆盖工作区根与嵌套仓库; 通配
+ * 只收集展开时刻已存在的路径, 需要无条件保护时用锚定条目 (如 `/.git`).
  */
 export const DEFAULT_READ_ONLY_PATHS: readonly string[] = ['.git']
 

@@ -1,4 +1,4 @@
-// expandReadOnlyPaths: gitignore 风格配置文本到 canonical 保护路径的展开语义
+// expandReadOnlyPaths: gitignore 语义配置文本到 canonical 保护路径的展开语义
 // (安全核心之一). 展开在真实文件系统的临时工作区内验证.
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -24,78 +24,112 @@ afterAll(() => {
 })
 
 describe('parsePatternLines', () => {
-  it('跳过空行与 # 注释, 解析 ! 前缀与尾部斜杠; 前导 / 保留 (绝对路径)', () => {
+  it('解析注释, 取反, 目录标记, 锚定与 // 绝对扩展; 未转义尾部空格被移除', () => {
     expect(parsePatternLines([
       '',
+      '   ',
       '# 注释行',
       '.git/',
       '!  ',
       '/etc/pki',
-      '!dist',
+      '//etc/pki',
+      'a/b/',
+      '\\#hash',
+      '\\!important.txt',
+      'name  ',
+      'with\\ space ',
     ].join('\n'))).toEqual([
-      { negated: false, pattern: '.git' },
-      { negated: false, pattern: '/etc/pki' },
-      { negated: true, pattern: 'dist' },
+      { negated: false, dirOnly: true, anchored: false, fsAbsolute: false, segments: ['.git'], source: '.git' },
+      { negated: false, dirOnly: false, anchored: true, fsAbsolute: false, segments: ['etc', 'pki'], source: 'etc/pki' },
+      { negated: false, dirOnly: false, anchored: true, fsAbsolute: true, segments: ['etc', 'pki'], source: 'etc/pki' },
+      { negated: false, dirOnly: true, anchored: true, fsAbsolute: false, segments: ['a', 'b'], source: 'a/b' },
+      { negated: false, dirOnly: false, anchored: false, fsAbsolute: false, segments: ['\\#hash'], source: '\\#hash' },
+      { negated: false, dirOnly: false, anchored: false, fsAbsolute: false, segments: ['\\!important.txt'], source: '\\!important.txt' },
+      { negated: false, dirOnly: false, anchored: false, fsAbsolute: false, segments: ['name'], source: 'name' },
+      { negated: false, dirOnly: false, anchored: false, fsAbsolute: false, segments: ['with\\ space'], source: 'with\\ space' },
     ])
   })
 })
 
-describe('expandReadOnlyPaths 字面条目', () => {
-  it('相对条目锚定工作区根; 不存在的路径保留词法形态', () => {
-    const { paths } = expandReadOnlyPaths('.git\nnode_modules', ws)
-    expect(paths).toEqual([join(ws, '.git'), join(ws, 'node_modules')])
-  })
-
-  it('canonical 化并去重: 不同写法的同一目标只保留一条', () => {
-    // `./src/nested/..` 词法归一后与 `src` 相同, 去重为一条.
-    const { paths } = expandReadOnlyPaths('src\n./src/nested/..', ws)
-    expect(paths).toEqual([join(ws, 'src')])
-  })
-
-  it('绝对条目原样生效', () => {
-    const abs = join(ws, 'keystore.bin')
-    const { paths } = expandReadOnlyPaths(abs, ws)
-    expect(paths).toEqual([abs])
-  })
-})
-
-describe('expandReadOnlyPaths glob 条目', () => {
-  it('* 匹配单段内任意字符, 只收集存在的路径', () => {
-    const { paths } = expandReadOnlyPaths('secrets/*.pem', ws)
-    expect(paths).toEqual([join(ws, 'secrets', 'a.pem'), join(ws, 'secrets', 'b.pem')])
-  })
-
-  it('? 匹配单字符', () => {
-    const { paths } = expandReadOnlyPaths('secrets/?.pem', ws)
-    expect(paths).toEqual([join(ws, 'secrets', 'a.pem'), join(ws, 'secrets', 'b.pem')])
-  })
-
-  it('** 递归匹配后代目录', () => {
-    const { paths } = expandReadOnlyPaths('src/**/nested', ws)
-    expect(paths).toEqual([join(ws, 'src', 'nested')])
-  })
-
-  it('glob 匹配到的目录按目录级语义保护后代', () => {
-    const { paths } = expandReadOnlyPaths('secret*', ws)
-    expect(paths).toEqual([join(ws, 'secrets')])
-  })
-
-  it('**/.git 同时覆盖工作区根与任意嵌套层级的 .git', () => {
+describe('expandReadOnlyPaths 锚定语义', () => {
+  it('不含分隔符的条目在任意层级匹配 (gitignore 非锚定语义)', () => {
     mkdirSync(join(ws, 'src', 'nested', '.git'), { recursive: true })
-    const { paths } = expandReadOnlyPaths('**/.git', ws)
+    const { paths } = expandReadOnlyPaths('.git', ws)
     expect(paths).toEqual([join(ws, '.git'), join(ws, 'src', 'nested', '.git')])
   })
+
+  it('锚定条目只匹配工作区根下的对应路径', () => {
+    const { paths } = expandReadOnlyPaths('/.git', ws)
+    expect(paths).toEqual([join(ws, '.git')])
+  })
+
+  it('锚定字面条目不存在时保留词法形态, 非锚定条目只收集存在路径', () => {
+    expect(expandReadOnlyPaths('/dist/a.txt', ws).paths).toEqual([join(ws, 'dist', 'a.txt')])
+    expect(expandReadOnlyPaths('node_modules', ws).paths).toEqual([])
+  })
+
+  it('// 前缀条目按文件系统绝对路径展开', () => {
+    expect(expandReadOnlyPaths(`//${ws}/keystore.bin`, ws).paths).toEqual([join(ws, 'keystore.bin')])
+    expect(expandReadOnlyPaths(`//${ws}/secret*`, ws).paths).toEqual([join(ws, 'secrets')])
+  })
 })
 
-describe('expandReadOnlyPaths 取反', () => {
-  it('! 条目从展开结果中剔除匹配项', () => {
+describe('expandReadOnlyPaths glob 语义', () => {
+  it('* 匹配单段内任意字符, ? 匹配单字符, 都不跨段', () => {
+    const a = join(ws, 'secrets', 'a.pem')
+    const b = join(ws, 'secrets', 'b.pem')
+    expect(expandReadOnlyPaths('secrets/*.pem', ws).paths).toEqual([a, b])
+    expect(expandReadOnlyPaths('secrets/?.pem', ws).paths).toEqual([a, b])
+  })
+
+  it('段内连续星号按普通 * 处理', () => {
+    expect(expandReadOnlyPaths('secret**', ws).paths).toEqual([join(ws, 'secrets')])
+  })
+
+  it('[...] 字符类含取反与 POSIX 类形式', () => {
+    const a = join(ws, 'secrets', 'a.pem')
+    const b = join(ws, 'secrets', 'b.pem')
+    expect(expandReadOnlyPaths('secrets/[ab].pem', ws).paths).toEqual([a, b])
+    expect(expandReadOnlyPaths('secrets/[!ab].pem', ws).paths).toEqual([])
+    expect(expandReadOnlyPaths('secrets/[[:alpha:]].pem', ws).paths).toEqual([a, b])
+    expect(expandReadOnlyPaths('secrets/[[:digit:]].pem', ws).paths).toEqual([])
+  })
+
+  it('** 独立成段时匹配零或多层目录', () => {
+    expect(expandReadOnlyPaths('src/**/nested', ws).paths).toEqual([join(ws, 'src', 'nested')])
+  })
+
+  it('尾部 / 只匹配目录', () => {
+    expect(expandReadOnlyPaths('secret*/', ws).paths).toEqual([join(ws, 'secrets')])
+    expect(expandReadOnlyPaths('keystore.bin/', ws).paths).toEqual([])
+  })
+
+  it('尾部 /** 保护命名目录本身, 裸 ** 保护起始根本身', () => {
+    expect(expandReadOnlyPaths('secrets/**', ws).paths).toEqual([join(ws, 'secrets')])
+    expect(expandReadOnlyPaths('/**', ws).paths).toEqual([ws])
+  })
+})
+
+describe('expandReadOnlyPaths 取反 (last-match-wins)', () => {
+  it('! 条目剔除顺序靠前的展开结果', () => {
     const { paths } = expandReadOnlyPaths('secrets/*.pem\n!secrets/b.pem', ws)
     expect(paths).toEqual([join(ws, 'secrets', 'a.pem')])
   })
 
-  it('取反不影响不匹配的条目', () => {
-    const { paths } = expandReadOnlyPaths('.git\nsecrets/*.pem\n!secrets/a.pem\n!does-not-exist', ws)
-    expect(paths).toEqual([join(ws, '.git'), join(ws, 'secrets', 'b.pem')])
+  it('靠后的正向条目重新纳入被取反的路径', () => {
+    const { paths } = expandReadOnlyPaths('!secrets/b.pem\nsecrets/*.pem', ws)
+    expect(paths).toEqual([join(ws, 'secrets', 'a.pem'), join(ws, 'secrets', 'b.pem')])
+  })
+
+  it('目录标记的取反不影响同名文件', () => {
+    const { paths } = expandReadOnlyPaths('keystore.bin\n!keystore.bin/', ws)
+    expect(paths).toEqual([join(ws, 'keystore.bin')])
+  })
+
+  it('锚定取反剔除深层展开结果', () => {
+    mkdirSync(join(ws, 'src', 'nested', '.git'), { recursive: true })
+    const { paths } = expandReadOnlyPaths('**/.git\n!src/nested/.git', ws)
+    expect(paths).toEqual([join(ws, '.git')])
   })
 })
 
@@ -106,12 +140,13 @@ describe('expandReadOnlyPaths 杂项', () => {
   })
 
   it('配置行展开告警为空 (无预算问题)', () => {
-    const { warnings } = expandReadOnlyPaths('.git\nsecrets/*', ws)
+    const { warnings } = expandReadOnlyPaths('/.git\nsecrets/*', ws)
     expect(warnings).toEqual([])
   })
 
-  it('绝对 glob 条目按其字面前缀展开', () => {
-    const { paths } = expandReadOnlyPaths(`${ws}/secret*`, ws)
-    expect(paths).toEqual([join(ws, 'secrets')])
+  it('canonical 化并去重: 不同写法的同一目标只保留一条', () => {
+    // `./src/nested/..` 词法归一后与 `src` 相同, 去重为一条.
+    const { paths } = expandReadOnlyPaths('src\n./src/nested/..', ws)
+    expect(paths).toEqual([join(ws, 'src')])
   })
 })

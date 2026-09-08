@@ -58,6 +58,6 @@ describe('client bundle loader 注册', () => {
   it('产物内联了全部逻辑, 只向 loader 请求 react', () => {
     // gitignore 语法的提示文案与页面标题都应打包进产物 (纯内联, 无其余外部请求).
     expect(code).toContain('写入保护')
-    expect(code).toContain('从保护中排除')
+    expect(code).toContain('按最后匹配生效')
   })
 })
