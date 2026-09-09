@@ -12,11 +12,12 @@
  * 对不存在路径同样有效); 其余条目枚举展开时刻已存在的路径 (新建路径要等
  * 下次重新展开才纳入). 执法扩展: `//` 前缀表示文件系统绝对路径
  * (gitignore 没有这个形态, 部署配置需要); 以 `/**` 结尾的条目按前缀围栏
- * 等价性保护其命名目录本身, 而不是枚举全部后代.
+ * 等价性保护其命名目录本身, 而不是枚举全部后代. 展开遍历用 lstat, 不走进
+ * 目录符号链接, 避免链到工作区外的大树 (如 `Applications -> /Applications`).
  * @module dsh-write-protect/patterns
  */
 
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { lstatSync, readdirSync } from 'node:fs'
 import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import { expandTildeAndEnv } from './path-expand.ts'
@@ -257,10 +258,13 @@ function compileEntry(entry: PatternEntry): CompiledEntry {
   return { entry, effective, matchers }
 }
 
-/** 目录性检查: 路径不存在时返回 null. */
+/**
+ * 目录性检查: 用 lstat, 不跟随符号链接. 路径不存在时返回 null; 指向目录的
+ * 链接视为非目录, 展开时不走进去.
+ */
 function statIsDir(path: string): boolean | null {
   try {
-    return statSync(path).isDirectory()
+    return lstatSync(path).isDirectory()
   } catch {
     return null
   }
@@ -271,7 +275,7 @@ function statIsDir(path: string): boolean | null {
  * 广度优先展开: `**` 段按零或多层目录展开, 字面段直接拼接并以存在性剪枝,
  * 其余段用 readdir 过滤 (非末段要求目录), 末段按 `dirOnly` 过滤.
  * 已经会被保护的目录不再往里走 (里面的后代本来也写不了); 被取反放行的
- * 目录还会继续找.
+ * 目录还会继续找. 目录符号链接不进入.
  */
 function collectGlobMatches(
   effective: readonly string[],
@@ -313,7 +317,7 @@ function collectGlobMatches(
     if (isLiteralSegment(segment)) {
       const next = `${current}/${segment}`
       if (!last) {
-        if (existsSync(next) && !isKeptDir(next)) queue.push({ current: next, index: index + 1 })
+        if (statIsDir(next) === true && !isKeptDir(next)) queue.push({ current: next, index: index + 1 })
         continue
       }
       const isDir = statIsDir(next)

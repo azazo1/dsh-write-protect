@@ -1,7 +1,7 @@
 // expandReadOnlyPaths: gitignore 语义配置文本到 canonical 保护路径的展开语义
 // (安全核心之一). 展开在真实文件系统的临时工作区内验证.
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -148,6 +148,17 @@ describe('expandReadOnlyPaths 取反 (last-match-wins)', () => {
       join(ws, 'gitdir'),
       join(ws, 'src', 'nested', 'gitdir', 'deep', 'gitdir'),
     ])
+  })
+})
+
+describe('expandReadOnlyPaths 目录符号链接', () => {
+  it('不走进目录符号链接, 只收集真实目录上的匹配', () => {
+    mkdirSync(join(ws, 'real', 'gitdir'), { recursive: true })
+    symlinkSync(join(ws, 'real'), join(ws, 'linkdir'))
+    const { paths } = expandReadOnlyPaths('gitdir', ws)
+    expect(paths).toContain(join(ws, 'gitdir'))
+    expect(paths).toContain(join(ws, 'real', 'gitdir'))
+    expect(paths).not.toContain(join(ws, 'linkdir', 'gitdir'))
   })
 })
 
