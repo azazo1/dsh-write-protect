@@ -136,6 +136,19 @@ describe('expandReadOnlyPaths 取反 (last-match-wins)', () => {
     const { paths } = expandReadOnlyPaths('**/gitdir\n!src/nested/gitdir', ws)
     expect(paths).toEqual([join(ws, 'gitdir')])
   })
+
+  it('已保护的目录不再往里找, 被取反的目录还会继续找', () => {
+    mkdirSync(join(ws, 'gitdir', 'inner', 'gitdir'), { recursive: true })
+    mkdirSync(join(ws, 'src', 'nested', 'gitdir', 'deep', 'gitdir'), { recursive: true })
+    expect(expandReadOnlyPaths('gitdir', ws).paths).toEqual([
+      join(ws, 'gitdir'),
+      join(ws, 'src', 'nested', 'gitdir'),
+    ])
+    expect(expandReadOnlyPaths('gitdir\n!src/nested/gitdir', ws).paths).toEqual([
+      join(ws, 'gitdir'),
+      join(ws, 'src', 'nested', 'gitdir', 'deep', 'gitdir'),
+    ])
+  })
 })
 
 describe('expandReadOnlyPaths 杂项', () => {
@@ -144,7 +157,7 @@ describe('expandReadOnlyPaths 杂项', () => {
     expect(paths).toEqual([])
   })
 
-  it('配置行展开告警为空 (无预算问题)', () => {
+  it('常规展开不产生告警', () => {
     const { warnings } = expandReadOnlyPaths('/gitdir\nsecrets/*', ws)
     expect(warnings).toEqual([])
   })

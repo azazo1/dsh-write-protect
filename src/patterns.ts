@@ -6,20 +6,19 @@
  * `[:alpha:]` 等 POSIX 类), `**` 仅在独立成段时递归 (开头 = 任意层级, 中间 =
  * 零或多层目录); 段内连续星号按普通 `*` 处理. `!` 取反按 gitignore 的
  * last-match-wins 顺序解释, 但前缀围栏模型与 gitignore 的目录剪枝一致:
- * 无法在仍受保护的目录内部重新放行后代.
+ * 无法在仍受保护的目录内部重新放行后代; 展开时也不再走进这些目录.
  *
  * 展开语义: 锚定字面条目是单一显式路径, 不存在也保留 (fs 围栏与 Seatbelt
- * 对不存在路径同样有效); 其余条目枚举展开时刻已存在的路径 (受限节点预算,
- * 超限停止并告警, 新建路径要等下次重新展开才纳入). 执法扩展: `//` 前缀
- * 表示文件系统绝对路径 (gitignore 没有这个形态, 部署配置需要); 以 `/**`
- * 结尾的条目按前缀围栏等价性保护其命名目录本身, 而不是枚举全部后代.
+ * 对不存在路径同样有效); 其余条目枚举展开时刻已存在的路径 (新建路径要等
+ * 下次重新展开才纳入). 执法扩展: `//` 前缀表示文件系统绝对路径
+ * (gitignore 没有这个形态, 部署配置需要); 以 `/**` 结尾的条目按前缀围栏
+ * 等价性保护其命名目录本身, 而不是枚举全部后代.
  * @module dsh-write-protect/patterns
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
-import { EXPAND_NODE_BUDGET } from './constants.ts'
 import { expandTildeAndEnv } from './path-expand.ts'
 
 /** 一条解析后的配置行. */
@@ -258,26 +257,8 @@ function compileEntry(entry: PatternEntry): CompiledEntry {
   return { entry, effective, matchers }
 }
 
-/** 预算耗尽信号: 展开中途停止, 已收集的路径仍然有效. */
-class BudgetExceeded extends Error {}
-
-/** 共享的遍历预算: readdir 与 stat 都消耗. */
-class NodeBudget {
-  private remaining: number
-
-  constructor(limit: number) {
-    this.remaining = limit
-  }
-
-  spend(): void {
-    this.remaining -= 1
-    if (this.remaining < 0) throw new BudgetExceeded('node budget exhausted')
-  }
-}
-
-/** 带预算的目录性检查: 路径不存在时返回 null. */
-function statIsDirBudgeted(path: string, budget: NodeBudget): boolean | null {
-  budget.spend()
+/** 目录性检查: 路径不存在时返回 null. */
+function statIsDir(path: string): boolean | null {
   try {
     return statSync(path).isDirectory()
   } catch {
@@ -287,61 +268,34 @@ function statIsDirBudgeted(path: string, budget: NodeBudget): boolean | null {
 
 /**
  * 枚举一个条目在 `start` 下匹配的现有路径 (POSIX 形态词法路径). 按队列
- * 广度优先: 同一深度的候选先于更深的子目录消耗预算, 避免 `**` 先钻进
- * node_modules 把浅层命中漏掉. `**` 段按零或多层目录展开, 字面段直接
- * 拼接并以存在性剪枝, 其余段用 readdir 过滤 (非末段要求目录), 末段按
- * `dirOnly` 过滤.
+ * 广度优先展开: `**` 段按零或多层目录展开, 字面段直接拼接并以存在性剪枝,
+ * 其余段用 readdir 过滤 (非末段要求目录), 末段按 `dirOnly` 过滤.
+ * 已经会被保护的目录不再往里走 (里面的后代本来也写不了); 被取反放行的
+ * 目录还会继续找.
  */
 function collectGlobMatches(
   effective: readonly string[],
   matchers: readonly (RegExp | null)[],
   dirOnly: boolean,
   start: string,
-  budget: NodeBudget,
-): { paths: Candidate[], exhausted: boolean } {
+  compiledEntries: readonly CompiledEntry[],
+  workspaceRoot: string,
+): Candidate[] {
+  const isKeptDir = (path: string): boolean => lastMatchKeeps({ path, isDir: true }, compiledEntries, workspaceRoot)
   const matches: Candidate[] = []
-  let exhausted = false
   const queue: { current: string, index: number }[] = [{ current: start, index: 0 }]
   let head = 0
 
-  try {
-    while (head < queue.length) {
-      const { current, index } = queue[head]!
-      head += 1
-      const segment = effective[index]!
-      const matcher = matchers[index]!
-      const last = index === effective.length - 1
-      if (matcher === null) {
-        // `**` 段: 先把 "匹配零段" 入队, 再把现存子目录入队, FIFO 保证浅层先出.
-        queue.push({ current, index: index + 1 })
-        budget.spend()
-        let names: string[]
-        try {
-          names = readdirSync(current)
-        } catch {
-          continue
-        }
-        for (const name of names) {
-          const child = `${current}/${name}`
-          budget.spend()
-          if (statIsDirBudgeted(child, budget) !== true) continue
-          queue.push({ current: child, index })
-        }
-        continue
-      }
-      if (isLiteralSegment(segment)) {
-        const next = `${current}/${segment}`
-        if (!last) {
-          budget.spend()
-          if (existsSync(next)) queue.push({ current: next, index: index + 1 })
-          continue
-        }
-        const isDir = statIsDirBudgeted(next, budget)
-        if (isDir === null || (dirOnly && !isDir)) continue
-        matches.push({ path: next, isDir })
-        continue
-      }
-      budget.spend()
+  while (head < queue.length) {
+    const { current, index } = queue[head]!
+    head += 1
+    const segment = effective[index]!
+    const matcher = matchers[index]!
+    const last = index === effective.length - 1
+    if (matcher === null) {
+      // `**` 段: 先把 "匹配零段" 入队, 再把现存子目录入队.
+      queue.push({ current, index: index + 1 })
+      if (isKeptDir(current)) continue
       let names: string[]
       try {
         names = readdirSync(current)
@@ -349,25 +303,46 @@ function collectGlobMatches(
         continue
       }
       for (const name of names) {
-        if (!matcher.test(name)) continue
-        const next = `${current}/${name}`
-        if (!last) {
-          budget.spend()
-          if (statIsDirBudgeted(next, budget) !== true) continue
-          queue.push({ current: next, index: index + 1 })
-          continue
-        }
-        const isDir = statIsDirBudgeted(next, budget)
-        if (isDir === null || (dirOnly && !isDir)) continue
-        matches.push({ path: next, isDir })
+        const child = `${current}/${name}`
+        if (statIsDir(child) !== true) continue
+        if (isKeptDir(child)) continue
+        queue.push({ current: child, index })
       }
+      continue
     }
-  } catch (error) {
-    if (!(error instanceof BudgetExceeded)) throw error
-    // 预算耗尽: 停止枚举, 已收集的部分仍然有效, 由调用方补充告警.
-    exhausted = true
+    if (isLiteralSegment(segment)) {
+      const next = `${current}/${segment}`
+      if (!last) {
+        if (existsSync(next) && !isKeptDir(next)) queue.push({ current: next, index: index + 1 })
+        continue
+      }
+      const isDir = statIsDir(next)
+      if (isDir === null || (dirOnly && !isDir)) continue
+      matches.push({ path: next, isDir })
+      continue
+    }
+    if (isKeptDir(current)) continue
+    let names: string[]
+    try {
+      names = readdirSync(current)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (!matcher.test(name)) continue
+      const next = `${current}/${name}`
+      if (!last) {
+        if (statIsDir(next) !== true) continue
+        if (isKeptDir(next)) continue
+        queue.push({ current: next, index: index + 1 })
+        continue
+      }
+      const isDir = statIsDir(next)
+      if (isDir === null || (dirOnly && !isDir)) continue
+      matches.push({ path: next, isDir })
+    }
   }
-  return { paths: matches, exhausted }
+  return matches
 }
 
 function toPosix(path: string): string {
@@ -440,8 +415,7 @@ function lastMatchKeeps(
 /**
  * 把配置文本针对一次调用的工作区根展开为 canonical 保护路径, 语义对齐
  * gitignore(5): 锚定字面条目不存在也保留; 其余条目只收集展开时刻已存在的
- * 路径 (之后新建的路径要等下次展开才纳入); 预算耗尽时保留已收集的部分并
- * 附带告警.
+ * 路径 (之后新建的路径要等下次展开才纳入). 已经会被保护的目录不往里走.
  * @param text - gitignore 语义的配置文本.
  * @param workspaceRoot - 本次调用的工作区根.
  * @returns canonical 保护路径 (去重) 与告警列表.
@@ -450,7 +424,6 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
   const warnings: string[] = []
   const entries = parsePatternLines(text)
   const compiledEntries = entries.map(compileEntry)
-  const budget = new NodeBudget(EXPAND_NODE_BUDGET)
   const candidates: Candidate[] = []
 
   for (let index = 0; index < entries.length; index += 1) {
@@ -471,20 +444,17 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
     ) {
       // 锚定字面条目: 单一显式路径, 不存在也保留词法形态.
       const path = resolvePath(entry.fsAbsolute ? '/' : workspaceRoot, entry.fsAbsolute ? `/${compiled.effective.join('/')}` : compiled.effective.join('/'))
-      candidates.push({ path, isDir: statIsDirBudgeted(path, budget) })
+      candidates.push({ path, isDir: statIsDir(path) })
       continue
     }
-    const collected = collectGlobMatches(
+    candidates.push(...collectGlobMatches(
       compiled.effective.slice(0, end),
       compiled.matchers.slice(0, end),
       entry.dirOnly || end < compiled.effective.length,
       start,
-      budget,
-    )
-    if (collected.exhausted) {
-      warnings.push(`glob "${entry.source}" reached the traversal budget (${EXPAND_NODE_BUDGET} nodes), the expansion may be incomplete`)
-    }
-    candidates.push(...collected.paths)
+      compiledEntries,
+      workspaceRoot,
+    ))
   }
 
   const paths: string[] = []
