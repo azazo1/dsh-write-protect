@@ -1,6 +1,6 @@
 {
   "name": "dsh-write-protect",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH sandbox extension: protect declared workspace subpaths (e.g. .git) from writes, and optionally grant extra writable roots under workspace-write, enforced for sandboxed CLI commands and the write/edit tools. 为 DSH 沙箱增加工作区子路径只读保护, 并支持在 workspace-write 下声明额外可写根.",
   "type": "module",
   "main": "./lib/policy.mjs",

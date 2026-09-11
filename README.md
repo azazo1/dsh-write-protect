@@ -15,7 +15,7 @@ dsh plugin --profile web add azazo1/dsh-write-protect
 固定版本:
 
 ```shell
-dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.0
+dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.1
 ```
 
 GitHub Release 同时挂不带版本号的预构建包, 安装时跳过 `allowBuilds`:
@@ -72,7 +72,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 ## 设置页
 
-<img src="docs/screenshots/settings-page.png" alt="写入保护设置页" width="520">
+<img src="https://raw.githubusercontent.com/azazo1/dsh-write-protect/HEAD/docs/screenshots/settings-page.png" alt="写入保护设置页" width="520">
 
 Web Settings 侧边栏的 "写入保护" 页面有三块内容: 保护路径 (gitignore 语义), 额外可写根 (字面路径) 和 macOS broker 加固开关. 保存后实时生效并持久化:
 
