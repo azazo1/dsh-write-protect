@@ -247,3 +247,74 @@ describe('expandWritablePaths 字面路径', () => {
     expect(unset.warnings.some(item => item.includes('unset or empty'))).toBe(true)
   })
 })
+
+describe('expandWritablePaths Windows 平台', () => {
+  const windowsWs = 'C:\\Users\\tester\\project'
+  const windowsOptions = { platform: 'win32' as const, home: 'C:\\Users\\tester' }
+
+  it('盘符绝对路径保留分隔符并原样生效', () => {
+    const { paths, warnings } = expandWritablePaths('C:\\Users\\tester\\Library\\pnpm', windowsWs, windowsOptions)
+    expect(paths).toEqual(['C:\\Users\\tester\\Library\\pnpm'])
+    expect(warnings).toEqual([])
+  })
+
+  it('多行 Windows 路径各自展开, 不再被拼到工作区根下', () => {
+    const { paths, warnings } = expandWritablePaths([
+      'C:\\Users\\tester\\Library\\pnpm',
+      'C:\\Users\\tester\\.cache',
+      'C:\\Users\\tester\\.cargo',
+      'C:\\Users\\tester\\.rustup',
+      'C:\\Users\\tester\\.npm',
+      'C:\\Users\\tester\\.local\\share\\uv',
+      'C:\\Users\\tester\\.bun',
+      'C:\\Users\\tester\\.go',
+    ].join('\n'), windowsWs, windowsOptions)
+    expect(paths).toEqual([
+      'C:\\Users\\tester\\Library\\pnpm',
+      'C:\\Users\\tester\\.cache',
+      'C:\\Users\\tester\\.cargo',
+      'C:\\Users\\tester\\.rustup',
+      'C:\\Users\\tester\\.npm',
+      'C:\\Users\\tester\\.local\\share\\uv',
+      'C:\\Users\\tester\\.bun',
+      'C:\\Users\\tester\\.go',
+    ])
+    expect(warnings).toEqual([])
+  })
+
+  it('漏掉盘符的斜杠形态: //C:/... 按盘符解析, /Users/... 只按当前盘解析', () => {
+    const withDrive = expandWritablePaths('//C:/Users/tester/caches', windowsWs, windowsOptions)
+    expect(withDrive.paths).toEqual(['C:\\Users\\tester\\caches'])
+    expect(withDrive.warnings).toEqual([])
+    const withoutDrive = expandWritablePaths('/Users/tester/caches', windowsWs, windowsOptions)
+    expect(withoutDrive.paths).toEqual(['\\Users\\tester\\caches'])
+  })
+
+  it('~\\... 与 ~/... 展开为家目录下的 Windows 路径', () => {
+    expect(expandWritablePaths('~\\.cache', windowsWs, windowsOptions).paths)
+      .toEqual(['C:\\Users\\tester\\.cache'])
+    expect(expandWritablePaths('~/.cache', windowsWs, windowsOptions).paths)
+      .toEqual(['C:\\Users\\tester\\.cache'])
+  })
+
+  it('盘符相对路径被拒绝, 而不是落到进程当前目录', () => {
+    const { paths, warnings } = expandWritablePaths('C:caches', windowsWs, windowsOptions)
+    expect(paths).toEqual([])
+    expect(warnings.some(item => item.includes('drive-relative'))).toBe(true)
+  })
+
+  it('Windows 上 \\ 后的通配符仍算元字符', () => {
+    const { paths, warnings } = expandWritablePaths('C:\\Users\\tester\\caches\\*', windowsWs, windowsOptions)
+    expect(paths).toEqual([])
+    expect(warnings.some(item => item.includes('glob metacharacters'))).toBe(true)
+  })
+
+  it('盘符根与工作区内条目照旧被拒绝 / 忽略, 大小写不敏感', () => {
+    const root = expandWritablePaths('C:\\', windowsWs, windowsOptions)
+    expect(root.paths).toEqual([])
+    expect(root.warnings.some(item => item.includes('filesystem root'))).toBe(true)
+    const inside = expandWritablePaths('c:\\users\\TESTER\\project\\scratch', windowsWs, windowsOptions)
+    expect(inside.paths).toEqual([])
+    expect(inside.warnings.some(item => item.includes('already inside the workspace'))).toBe(true)
+  })
+})

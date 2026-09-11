@@ -18,9 +18,9 @@
  */
 
 import { lstatSync, readdirSync } from 'node:fs'
-import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep } from 'node:path'
+import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep, type PlatformPath } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
-import { expandTildeAndEnv } from './path-expand.ts'
+import { escapesWithBackslash, expandTildeAndEnv, pathApiOf, type PathExpandOptions } from './path-expand.ts'
 
 /** 一条解析后的配置行. */
 export interface PatternEntry {
@@ -473,10 +473,14 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
   return { paths, warnings }
 }
 
-/** 未转义的 glob 元字符: 额外可写根是字面路径, 命中则拒绝该行. */
-function hasUnescapedGlobMeta(line: string): boolean {
+/**
+ * 未转义的 glob 元字符: 额外可写根是字面路径, 命中则拒绝该行.
+ * `\` 只在把它当转义符的平台 (POSIX) 上跳过下一字符; Windows 上它是分隔符,
+ * 其后的 `*` / `?` / `[` 同样算元字符.
+ */
+function hasUnescapedGlobMeta(line: string, backslashEscapes: boolean): boolean {
   for (let index = 0; index < line.length; index += 1) {
-    if (line[index] === '\\') {
+    if (backslashEscapes && line[index] === '\\') {
       index += 1
       continue
     }
@@ -487,20 +491,22 @@ function hasUnescapedGlobMeta(line: string): boolean {
 }
 
 /** canonical 路径是否就是文件系统根 (POSIX `/` 或 Windows 盘符根). */
-function isFilesystemRoot(path: string): boolean {
+function isFilesystemRoot(path: string, api: PlatformPath): boolean {
   const canonical = canonicalPath(path)
-  return canonical === parsePath(canonical).root
+  return canonical === api.parse(canonical).root
 }
 
 /** 词法包含: extra 可写根若已落在工作区内则没有放宽效果. */
-function isLexicallyUnderRoot(path: string, root: string): boolean {
-  const caseSensitive = process.platform !== 'win32'
+function isLexicallyUnderRoot(path: string, root: string, separator: string, caseSensitive: boolean): boolean {
   const comparablePath = caseSensitive ? path : path.toLowerCase()
   const comparableRoot = caseSensitive ? root : root.toLowerCase()
   if (comparablePath === comparableRoot) return true
-  const prefix = comparableRoot.endsWith(sep) ? comparableRoot : comparableRoot + sep
+  const prefix = comparableRoot.endsWith(separator) ? comparableRoot : comparableRoot + separator
   return comparablePath.startsWith(prefix)
 }
+
+/** 盘符相对路径 (`C:foo`): Windows 上按"该盘当时的当前目录"解析, 落点不可预期. */
+const DRIVE_RELATIVE = /^[A-Za-z]:(?![\\/])/
 
 /**
  * 把额外可写配置文本展开为 canonical 根. 与保护路径不同, 这里是字面路径
@@ -508,12 +514,22 @@ function isLexicallyUnderRoot(path: string, root: string): boolean {
  * `$NAME` / `${NAME}` 展开为环境变量; `//` 或宿主绝对路径按文件系统解析,
  * 其余相对当前工作区 (含 `..`). 工作区内的条目没有放宽效果, 文件系统根
  * 拒绝; 不存在的路径仍保留词法形态 (fs / Seatbelt 可按前缀放行, bwrap /
- * Landlock 在叠加时跳过).
+ * Landlock 在叠加时跳过). Windows 上盘符相对路径 (`C:caches`) 拒绝 —— 它的
+ * 落点取决于进程当前目录, 会静默给出调用方从未指定的可写根.
  * @param text - 逐行一条字面路径的配置文本.
  * @param workspaceRoot - 本次调用的工作区根.
+ * @param options - 平台与家目录覆盖, 缺省按当前进程与当前用户.
  * @returns canonical 额外可写根 (去重) 与告警列表.
  */
-export function expandWritablePaths(text: string, workspaceRoot: string): ExpandResult {
+export function expandWritablePaths(
+  text: string,
+  workspaceRoot: string,
+  options: PathExpandOptions = {},
+): ExpandResult {
+  const platform = options.platform ?? process.platform
+  const api = pathApiOf(platform)
+  const backslashEscapes = escapesWithBackslash(platform)
+  const caseSensitive = platform !== 'win32'
   const warnings: string[] = []
   const paths: string[] = []
   const seen = new Set<string>()
@@ -526,31 +542,35 @@ export function expandWritablePaths(text: string, workspaceRoot: string): Expand
       warnings.push(`writable path "${line}" uses ! negation; extra writable roots are a literal list`)
       continue
     }
-    const expanded = expandTildeAndEnv(line)
+    const expanded = expandTildeAndEnv(line, options)
     if ('error' in expanded) {
       warnings.push(`writable path "${line}" ${expanded.error}`)
       continue
     }
-    if (hasUnescapedGlobMeta(expanded.ok)) {
+    if (platform === 'win32' && DRIVE_RELATIVE.test(expanded.ok)) {
+      warnings.push(`writable path "${line}" is drive-relative and has no fixed target; write the drive root explicitly, e.g. "${expanded.ok.slice(0, 2)}\\${expanded.ok.slice(2)}"`)
+      continue
+    }
+    if (hasUnescapedGlobMeta(expanded.ok, backslashEscapes)) {
       warnings.push(`writable path "${line}" contains glob metacharacters; extra writable roots must be literal paths`)
       continue
     }
 
     let resolved: string
     if (expanded.ok.startsWith('//')) {
-      resolved = resolvePath('/', expanded.ok.slice(2))
-    } else if (isAbsolute(expanded.ok)) {
-      resolved = resolvePath(expanded.ok)
+      resolved = api.resolve('/', expanded.ok.slice(2))
+    } else if (api.isAbsolute(expanded.ok)) {
+      resolved = api.resolve(expanded.ok)
     } else {
-      resolved = resolvePath(workspaceRoot, expanded.ok)
+      resolved = api.resolve(workspaceRoot, expanded.ok)
     }
 
-    if (isFilesystemRoot(resolved)) {
+    if (isFilesystemRoot(resolved, api)) {
       warnings.push(`writable path "${line}" resolves to the filesystem root and is rejected`)
       continue
     }
     const canonical = canonicalPath(resolved)
-    if (isLexicallyUnderRoot(canonical, workspaceCanonical)) {
+    if (isLexicallyUnderRoot(canonical, workspaceCanonical, api.sep, caseSensitive)) {
       warnings.push(`writable path "${line}" is already inside the workspace and is ignored`)
       continue
     }
