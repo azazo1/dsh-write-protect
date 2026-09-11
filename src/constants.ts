@@ -13,6 +13,16 @@ export const PATTERNS_FIELD = 'patterns'
 /** settings namespace 的额外可写根字段名 (字面路径的多行文本). */
 export const WRITABLE_FIELD = 'writablePatterns'
 
+/** settings namespace 的 macOS broker 加固开关字段名. */
+export const HARDEN_BROKER_FIELD = 'hardenBroker'
+
+/**
+ * macOS broker 逃逸加固的默认值: 开启. 官方 profile 的 `(allow default)`
+ * 让沙箱内一条 `open x.app` 就能经 launchd 在沙箱外执行, 属于应当默认堵上的
+ * 漏洞, 因此默认收紧; 只在确实需要从沙箱内驱动宿主 GUI 时才在设置页关掉.
+ */
+export const DEFAULT_HARDEN_BROKER = true
+
 /**
  * 保护路径的唯一默认来源: patch 配置 `readOnlyPaths` 的 schema 默认值与
  * 设置页展示的部署 base 都由它推导. 修改默认保护范围只需改这一处.
@@ -50,13 +60,19 @@ export interface PathPreview {
 }
 
 /**
- * 为逐次调用的沙箱 policy 追加解析后的保护路径与额外可写根. 官方 policy
- * 类型不做改动, 这个接口合并让每个消费方都能直接读 `policy.readOnlyPaths`
- * 与 `policy.writablePaths`, 无需再引入插件私有的 service.
+ * 为逐次调用的沙箱 policy 追加解析后的保护路径, 额外可写根与 broker 加固开关.
+ * 官方 policy 类型不做改动, 这个接口合并让每个消费方都能直接读
+ * `policy.readOnlyPaths` / `policy.writablePaths` / `policy.hardenBroker`,
+ * 无需再引入插件私有的 service.
  */
 declare module '@deepseek-ai/dsh-sandbox' {
   interface SandboxExecutionPolicy {
     readOnlyPaths?: readonly string[]
     writablePaths?: readonly string[]
+    /**
+     * macOS Seatbelt 是否追加 broker 逃逸拒绝形式. 缺省视为开启; 只有设置页
+     * 或部署配置显式关掉时才为 false, 此时命令按官方 profile 运行.
+     */
+    hardenBroker?: boolean
   }
 }

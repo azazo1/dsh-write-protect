@@ -1,9 +1,9 @@
 /**
  * Client 半区入口: 在 Web Settings 注册独立的 "写入保护" 配置页. 通过
- * `settingsScope` 绑定 Host 的 {@link PLUGIN_ID} namespace (patterns 与
- * writablePatterns 字段), 页面保存的文本经 Host settings 持久化并实时生效;
- * base 层是 patch 配置的 `readOnlyPaths` / `writablePaths` 数组, 用户未保存
- * 过文本时页面展示 base.
+ * `settingsScope` 绑定 Host 的 {@link PLUGIN_ID} namespace (patterns,
+ * writablePatterns 与 hardenBroker 字段), 页面保存的值经 Host settings 持久化
+ * 并实时生效; base 层是 patch 配置的 `readOnlyPaths` / `writablePaths` /
+ * `hardenBroker`, 用户未保存过时页面展示 base.
  *
  * 构建产物是 CJS 形态的 loader 模块: tsdown 以 banner/footer 包裹为
  * `window.__ModuleLoader__.load({ id, factory: (require) => ... })`,
@@ -13,7 +13,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../constants.ts'
+import { HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../constants.ts'
 import { mountWriteProtectSection, type WriteProtectScope } from './section.ts'
 import { sessionCwdOf, type SessionsLike } from './session-cwd.ts'
 
@@ -26,6 +26,7 @@ const React = require('react') as typeof import('react')
 export interface WriteProtectSettings {
   patterns?: string
   writablePatterns?: string
+  hardenBroker?: boolean
 }
 
 /** 未知 section 结构到类型化配置的解码; 异常结构回退 undefined (走 base 展示). */
@@ -34,10 +35,13 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   const record = section as Record<string, unknown>
   const patterns = record[PATTERNS_FIELD]
   const writable = record[WRITABLE_FIELD]
+  const hardenBroker = record[HARDEN_BROKER_FIELD]
   const decoded: WriteProtectSettings = {}
   if (typeof patterns === 'string') decoded.patterns = patterns
   if (typeof writable === 'string') decoded.writablePatterns = writable
-  return decoded.patterns === undefined && decoded.writablePatterns === undefined ? undefined : decoded
+  if (typeof hardenBroker === 'boolean') decoded.hardenBroker = hardenBroker
+  const empty = decoded.patterns === undefined && decoded.writablePatterns === undefined && decoded.hardenBroker === undefined
+  return empty ? undefined : decoded
 }
 
 /** 页面依赖的服务: settingsScope 提供配置通道, slots 提供注册面, sessions 提供当前 cwd. */

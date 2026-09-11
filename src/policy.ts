@@ -15,7 +15,7 @@ import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import { DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS, PATTERNS_FIELD, PLUGIN_ID, PROMPT_CONTEXT_ORDER, WRITABLE_FIELD } from './constants.ts'
+import { DEFAULT_HARDEN_BROKER, DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS, HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, PROMPT_CONTEXT_ORDER, WRITABLE_FIELD } from './constants.ts'
 import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
 import { mountPreviewRoute, type PreviewConnection } from './preview-route.ts'
 
@@ -42,6 +42,11 @@ export interface Config {
    * 保护路径优先. 用户保存过 writablePatterns 文本后该数组不再生效.
    */
   writablePaths?: string[]
+  /**
+   * macOS Seatbelt broker 逃逸加固的部署 base, 缺省开启 (见
+   * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
+   */
+  hardenBroker?: boolean
 }
 
 /** 展开结果的缓存有效时长: resolve 每个 tool call 都会调用, glob 枚举有 IO 成本. */
@@ -54,11 +59,13 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     workspaceRoot: z.string(),
     readOnlyPaths: z.array(z.string()).default([...DEFAULT_READ_ONLY_PATHS]),
     writablePaths: z.array(z.string()).default([...DEFAULT_WRITABLE_PATHS]),
+    hardenBroker: z.boolean().default(DEFAULT_HARDEN_BROKER),
   })
 
   private readonly baseEntries: readonly string[]
   private readonly writableBaseEntries: readonly string[]
-  private settingsOwner: SettingsScope<Record<typeof PATTERNS_FIELD | typeof WRITABLE_FIELD, string>> | undefined
+  private readonly hardenBrokerBase: boolean
+  private settingsOwner: SettingsScope<WriteProtectSettings> | undefined
   private cache: { at: number, key: string, readOnly: readonly string[], writable: readonly string[] } = {
     at: 0,
     key: '',
@@ -83,12 +90,17 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     }
     this.baseEntries = entries
     this.writableBaseEntries = writableEntries
+    this.hardenBrokerBase = config.hardenBroker ?? DEFAULT_HARDEN_BROKER
 
-    // Web 设置页的持久化配置: composition base 是 patch 的数组, 用户保存过
-    // 的文本覆盖对应字段; 编辑后缓存失效实时生效.
+    // Web 设置页的持久化配置: composition base 是 patch 的数组与开关, 用户保存过
+    // 的值覆盖对应字段; 编辑后缓存失效实时生效.
     ctx.inject(['settings'], (scope: Context) => {
       const owner = scope.settings.register(PLUGIN_ID, WriteProtectSettingsSchema, {
-        base: { [PATTERNS_FIELD]: this.baseText(), [WRITABLE_FIELD]: this.writableBaseText() },
+        base: {
+          [PATTERNS_FIELD]: this.baseText(),
+          [WRITABLE_FIELD]: this.writableBaseText(),
+          [HARDEN_BROKER_FIELD]: this.hardenBrokerBase,
+        },
       })
       this.settingsOwner = owner
       owner.watch(() => {
@@ -152,6 +164,12 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return typeof value === 'string' ? value : this.writableBaseText()
   }
 
+  /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
+  private currentHardenBroker(): boolean {
+    const value = this.settingsOwner?.get()?.[HARDEN_BROKER_FIELD]
+    return typeof value === 'boolean' ? value : this.hardenBrokerBase
+  }
+
   /**
    * 展开当前生效文本为 canonical 保护路径与额外可写根, 按
    * (两份文本, 工作区根) 做 TTL 缓存. 展开告警对每条只告警一次.
@@ -178,23 +196,34 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
 
   /**
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
-   * 追加注入解析后的保护路径与额外可写根.
+   * 追加注入解析后的保护路径, 额外可写根与 broker 加固开关.
    * @param request - 可选的会话与已批准的模式覆盖.
-   * @returns 带有 `readOnlyPaths` 与 `writablePaths` 的完整逐次调用 policy.
+   * @returns 带有 `readOnlyPaths` / `writablePaths` / `hardenBroker` 的完整逐次调用 policy.
    */
   override resolve(request: Parameters<SandboxPolicyService['resolve']>[0] = {}): SandboxExecutionPolicy {
     const policy = super.resolve(request)
     const { readOnly, writable } = this.snapshot(policy.workspaceRoot)
     policy.readOnlyPaths = readOnly
     policy.writablePaths = writable
+    policy.hardenBroker = this.currentHardenBroker()
     return policy
   }
 }
 
-/** settings namespace 的 schema: 两份多行文本, 未编辑时为 undefined (走 base). */
+/**
+ * settings namespace 的字段集合: 两份多行文本与一个开关, 未编辑时走 base.
+ * 与 `WriteProtectSettingsSchema` 的键保持一致.
+ */
+type WriteProtectSettings =
+  & Record<typeof PATTERNS_FIELD, string>
+  & Record<typeof WRITABLE_FIELD, string>
+  & Record<typeof HARDEN_BROKER_FIELD, boolean>
+
+/** settings namespace 的 schema: 两份多行文本加 broker 加固开关. */
 const WriteProtectSettingsSchema = z.object({
   [PATTERNS_FIELD]: z.string(),
   [WRITABLE_FIELD]: z.string(),
+  [HARDEN_BROKER_FIELD]: z.boolean(),
 })
 
 export default WriteProtectPolicyService

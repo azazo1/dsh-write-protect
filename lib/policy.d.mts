@@ -25,6 +25,11 @@ export interface Config {
    * 保护路径优先. 用户保存过 writablePatterns 文本后该数组不再生效.
    */
   writablePaths?: string[];
+  /**
+   * macOS Seatbelt broker 逃逸加固的部署 base, 缺省开启 (见
+   * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
+   */
+  hardenBroker?: boolean;
 }
 export declare class WriteProtectPolicyService extends SandboxPolicyService {
   static Config: z<Schemastery.ObjectS<{
@@ -32,14 +37,17 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     workspaceRoot: z<string, string>;
     readOnlyPaths: z<string[], string[]>;
     writablePaths: z<string[], string[]>;
+    hardenBroker: z<boolean, boolean>;
   }>, Schemastery.ObjectT<{
     mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access">;
     workspaceRoot: z<string, string>;
     readOnlyPaths: z<string[], string[]>;
     writablePaths: z<string[], string[]>;
+    hardenBroker: z<boolean, boolean>;
   }>>;
   private readonly baseEntries;
   private readonly writableBaseEntries;
+  private readonly hardenBrokerBase;
   private settingsOwner;
   private cache;
   private readonly warned;
@@ -52,6 +60,8 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private currentText;
   /** 当前生效的额外可写文本: 用户保存过的 writablePatterns 覆盖部署 base. */
   private currentWritableText;
+  /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
+  private currentHardenBroker;
   /**
    * 展开当前生效文本为 canonical 保护路径与额外可写根, 按
    * (两份文本, 工作区根) 做 TTL 缓存. 展开告警对每条只告警一次.
@@ -59,9 +69,9 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private snapshot;
   /**
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
-   * 追加注入解析后的保护路径与额外可写根.
+   * 追加注入解析后的保护路径, 额外可写根与 broker 加固开关.
    * @param request - 可选的会话与已批准的模式覆盖.
-   * @returns 带有 `readOnlyPaths` 与 `writablePaths` 的完整逐次调用 policy.
+   * @returns 带有 `readOnlyPaths` / `writablePaths` / `hardenBroker` 的完整逐次调用 policy.
    */
   resolve(request?: Parameters<SandboxPolicyService['resolve']>[0]): SandboxExecutionPolicy;
 }

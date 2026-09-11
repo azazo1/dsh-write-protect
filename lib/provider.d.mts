@@ -5,10 +5,17 @@ export declare const name = "dsh-write-protect-provider";
 export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
   private warnedUnsupported;
   /**
-   * 按官方结果包装 argv 后叠加额外可写根与保护路径. 只在 `workspace-write`
-   * 下生效: `read-only` 的官方 profile 已全量拒绝, 额外可写不打穿.
+   * 按官方结果包装 argv 后叠加额外可写根, 保护路径与 broker 逃逸加固.
+   * Seatbelt 在两种模式下都要加固: `read-only` 的官方 profile 同样是
+   * `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍不打穿它.
    */
   confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv;
+  /**
+   * Seatbelt: 追加额外可写 allow (仅 `workspace-write`), 保护路径 deny, 最后是
+   * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`.
+   * `hardenBroker` 被显式关掉时只跳过 broker 拒绝形式, 命令按官方 profile 运行.
+   */
+  private hardenSeatbelt;
   /** 在 `--` 之前插入一组 profile 参数. */
   private insertBeforeSeparator;
   /**
@@ -37,8 +44,8 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * 告警并保持官方结果.
    */
   private withSeatbeltDenials;
-  /** 把一条 SBPL 形式追加到 `-p` profile 文本末尾. */
-  private appendSeatbeltForm;
+  /** 把一组 SBPL 形式追加到 `-p` profile 文本末尾, 形状缺失时告警并保持官方结果. */
+  private appendSeatbelt;
   /** 无法表达子路径保护的 runner: 只告警一次, 命令按官方 profile 运行. */
   private warnUnsupported;
   /** bwrap 无法 ro-bind 的缺失路径: 告警并说明 write/edit 工具侧仍然受保护. */

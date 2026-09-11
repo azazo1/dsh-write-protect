@@ -64,6 +64,8 @@ describe('client bundle loader 注册', () => {
     expect(code).toContain('通配只匹配已存在的路径')
     expect(code).toContain('额外可写根')
     expect(code).toContain('不打穿 read-only')
+    expect(code).toContain('macOS broker 逃逸加固')
+    expect(code).toContain('已启用')
     expect(code).toContain('当前用户家目录')
     expect(code).toContain('$NAME')
     expect(code).toContain('预览')

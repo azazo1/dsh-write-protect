@@ -8,9 +8,13 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { WriteProtectSandboxProvider } from '../src/provider.ts'
+import { SEATBELT_BROKER_DENIALS } from '../src/seatbelt.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
 type Internals = WriteProtectSandboxProvider['internals']
+
+/** profile 末尾固定的 broker 加固尾巴: last-match-wins 要求它排在最后. */
+const BROKER_TAIL = SEATBELT_BROKER_DENIALS.join(' ')
 
 async function setup(config: Record<string, unknown> = {}, internals: Internals = {}) {
   const ctx = new Context()
@@ -73,7 +77,8 @@ describe('WriteProtectSandboxProvider.confine', () => {
     expect(result.argv[0]).toBe('sandbox-exec')
     const profileIndex = result.argv.indexOf('-p')
     const profile = result.argv[profileIndex + 1]!
-    expect(profile.endsWith('(deny file-write* (subpath "/ws/gitdir"))')).toBe(true)
+    expect(profile).toContain('(deny file-write* (subpath "/ws/gitdir"))')
+    expect(profile.endsWith(BROKER_TAIL)).toBe(true)
     expect(profile).toContain('(version 1)')
     expect(profile).toContain('(allow default)')
     expect(profile).toContain('(deny file-write*)')
@@ -87,11 +92,17 @@ describe('WriteProtectSandboxProvider.confine', () => {
     expect(profile).toContain('(subpath "/ws/gitdir") (subpath "/ws/dist")')
   })
 
-  it('read-only 模式不叠加 (官方 profile 已全量拒绝)', async () => {
+  it('read-only 模式不叠加保护路径与额外可写根, 但同样追加 broker 加固', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
     const baseline = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
-    const result = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', readOnlyPaths: ['/ws/gitdir'] })
-    expect(result.argv).toEqual(baseline.argv)
+    const protectedOnly = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', readOnlyPaths: ['/ws/gitdir'] })
+    const withExtra = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writablePaths: ['/extra'] })
+    expect(protectedOnly.argv).toEqual(baseline.argv)
+    expect(withExtra.argv).toEqual(baseline.argv)
+    const profile = baseline.argv[baseline.argv.indexOf('-p') + 1]!
+    expect(profile.endsWith(BROKER_TAIL)).toBe(true)
+    expect(profile).not.toContain('"/ws/gitdir"')
+    expect(profile).not.toContain('"/extra"')
   })
 
   it('空保护列表直接短路', async () => {
@@ -148,8 +159,9 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const result = sandbox.confine(['true'], ww('/ws', ['/ws/gitdir'], ['/extra']))
     const profile = result.argv[result.argv.indexOf('-p') + 1]!
     expect(profile).toContain('(allow file-write* (subpath "/extra"))')
-    expect(profile.endsWith('(deny file-write* (subpath "/ws/gitdir"))')).toBe(true)
+    expect(profile).toContain('(deny file-write* (subpath "/ws/gitdir"))')
     expect(profile.lastIndexOf('(allow file-write* (subpath "/extra"))')).toBeLessThan(profile.lastIndexOf('(deny file-write* (subpath "/ws/gitdir"))'))
+    expect(profile.endsWith(BROKER_TAIL)).toBe(true)
   })
 
   it('Landlock: 额外可写根加 --rw, 保护路径仍不叠加', async () => {
@@ -165,10 +177,36 @@ describe('WriteProtectSandboxProvider.confine', () => {
     expect(result.argv[extraAt - 1]).toBe('--rw')
   })
 
-  it('read-only 模式不叠加额外可写根', async () => {
+  it('非 Seatbelt runner 不追加 broker 加固', async () => {
+    const bwrapSandbox = await setup({}, BWRAP_INTERNALS)
+    expect(bwrapSandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')])).argv.join(' ')).not.toContain('appleevent-send')
+    const landlockSandbox = await setup({}, LANDLOCK_INTERNALS)
+    expect(landlockSandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')])).argv.join(' ')).not.toContain('appleevent-send')
+  })
+
+  it('Seatbelt: hardenBroker 为 false 时只跳过 broker 加固, 保护路径仍生效', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const baseline = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
-    const result = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writablePaths: ['/extra'] })
-    expect(result.argv).toEqual(baseline.argv)
+    const result = sandbox.confine(['true'], { ...ww('/ws', ['/ws/gitdir']), hardenBroker: false })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile).toContain('(deny file-write* (subpath "/ws/gitdir"))')
+    expect(profile).not.toContain('appleevent-send')
+    expect(profile).not.toContain('com.apple.coreservices')
+    expect(profile).not.toContain('mach-priv-task-port')
+  })
+
+  it('Seatbelt: hardenBroker 为 false 的 read-only profile 保持官方形态', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', hardenBroker: false })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile).toContain('(allow default)')
+    expect(profile).toContain('(deny file-write*)')
+    expect(profile).not.toContain('com.apple.coreservices')
+    expect(profile).not.toContain('(deny appleevent-send)')
+  })
+
+  it('Seatbelt: hardenBroker 未声明时按开启处理', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const argv = sandbox.confine(['true'], ww('/ws', [])).argv
+    expect(argv[argv.indexOf('-p') + 1]).toContain('(deny appleevent-send)')
   })
 })

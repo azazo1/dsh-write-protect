@@ -9,14 +9,14 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
+import { HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
 import { WriteProtectPreviewPanel } from './preview-panel.ts'
 
 /** 组件对 settings scope 的最小结构视图 (避免耦合具体包的类型导出). */
 export interface WriteProtectScope {
   subscribe(listener: () => void): () => void
-  getSnapshot(): { value?: { patterns?: string, writablePatterns?: string } }
-  set(field: string, value: string): unknown
+  getSnapshot(): { value?: { patterns?: string, writablePatterns?: string, hardenBroker?: boolean } }
+  set(field: string, value: string | boolean): unknown
 }
 
 /** 客户端注入的 React runtime 形状 (module loader 的预载模块). */
@@ -56,6 +56,8 @@ const CSS_TEXT = `
 .dsh-wp-list { margin: 0; padding: 0 0 0 18px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-primary); }
 .dsh-wp-empty { margin: 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .dsh-wp-preview-label { margin: 8px 0 4px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.dsh-wp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dsw-alias-label-primary); cursor: pointer; }
+.dsh-wp-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
 `
 
 /** 注入页面样式 (data-plugin-css 标记防止重复插入). */
@@ -83,9 +85,14 @@ export function WriteProtectSection(
     listener => scope.subscribe(listener),
     () => scope.getSnapshot().value?.writablePatterns ?? '',
   )
+  const savedHarden = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.hardenBroker ?? true,
+  )
   // null 表示没有本地编辑: 输入框展示 Host 侧的当前值.
   const [patternsDraft, setPatternsDraft] = useState<string | null>(null)
   const [writableDraft, setWritableDraft] = useState<string | null>(null)
+  const [hardenDraft, setHardenDraft] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [view, setView] = useState<'edit' | 'preview'>('edit')
   const [previewing, setPreviewing] = useState(false)
@@ -93,8 +100,10 @@ export function WriteProtectSection(
   const [previewError, setPreviewError] = useState('')
   const patternsValue = patternsDraft ?? savedPatterns
   const writableValue = writableDraft ?? savedWritable
+  const hardenValue = hardenDraft ?? savedHarden
   const dirty = (patternsDraft !== null && patternsDraft !== savedPatterns)
     || (writableDraft !== null && writableDraft !== savedWritable)
+    || (hardenDraft !== null && hardenDraft !== savedHarden)
 
   const onPreview = (): void => {
     setPreviewing(true)
@@ -146,10 +155,12 @@ export function WriteProtectSection(
     const writes: Promise<unknown>[] = []
     if (patternsDraft !== null) writes.push(Promise.resolve(scope.set(PATTERNS_FIELD, patternsDraft)))
     if (writableDraft !== null) writes.push(Promise.resolve(scope.set(WRITABLE_FIELD, writableDraft)))
+    if (hardenDraft !== null) writes.push(Promise.resolve(scope.set(HARDEN_BROKER_FIELD, hardenDraft)))
     void Promise.all(writes).then(() => {
       setSaving(false)
       setPatternsDraft(null)
       setWritableDraft(null)
+      setHardenDraft(null)
     })
   }
 
@@ -204,6 +215,38 @@ export function WriteProtectSection(
         ') 相对当前会话工作区. 工作区内的路径本来就可写, 会被忽略; 文件系统根会被拒绝. 保护路径仍然优先. 清空即不额外放行. Windows 上仅 write/edit 工具生效, bash 仍受官方 ACL 限制.',
       ),
     ),
+    createElement(
+      'div',
+      { className: 'dsh-wp-card' },
+      createElement('h3', { className: 'dsh-wp-card-title' }, 'macOS broker 逃逸加固'),
+      createElement(
+        'label',
+        { className: 'dsh-wp-toggle' },
+        createElement('input', {
+          type: 'checkbox',
+          checked: hardenValue,
+          onChange: (event: { currentTarget: { checked: boolean } }) => setHardenDraft(event.currentTarget.checked),
+        }),
+        createElement('span', null, hardenValue ? '已启用' : '已关闭'),
+      ),
+      createElement(
+        'p',
+        { className: 'dsh-wp-hint' },
+        'macOS 的 Seatbelt profile 是 ',
+        createElement('code', null, '(allow default)'),
+        ', 而在 launchd 代理下启动的进程不继承它 —— 沙箱内一条 ',
+        createElement('code', null, 'open x.app'),
+        ' 就能让命令在沙箱外任意读写, 绕开 ',
+        createElement('code', null, 'deny file-write*'),
+        ' (read-only 同样如此). 启用后在 profile 末尾追加拒绝 ',
+        createElement('code', null, 'com.apple.coreservices'),
+        ' / ',
+        createElement('code', null, 'appleevent-send'),
+        ' / ',
+        createElement('code', null, 'mach-priv-task-port'),
+        ', 只收紧不放宽; 常规命令 (node, git, pnpm 等) 不受影响. 关闭后按官方 profile 运行, 只在确需从沙箱内驱动宿主 GUI 时才关. 仅 macOS 生效.',
+      ),
+    ),
   )
 
   const status = previewError !== ''
@@ -251,6 +294,7 @@ export function WriteProtectSection(
           onClick: () => {
             setPatternsDraft(null)
             setWritableDraft(null)
+            setHardenDraft(null)
           },
         },
         '放弃更改',
