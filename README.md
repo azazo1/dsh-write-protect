@@ -72,6 +72,8 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 ## 设置页
 
+![写入保护设置页](docs/screenshots/settings-page.png)
+
 Web Settings 侧边栏的 "写入保护" 页面有三块内容: 保护路径 (gitignore 语义), 额外可写根 (字面路径) 和 macOS broker 加固开关. 保存后实时生效并持久化:
 
 ```text
