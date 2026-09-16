@@ -62,7 +62,7 @@ jobs:
 
       - name: 检出发布 tag
         if: steps.release_context.outputs.is_release == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.release_context.outputs.source_ref }}
 
@@ -89,15 +89,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出目标提交
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.source_ref }}
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -153,7 +153,7 @@ jobs:
           test -s dist/dsh-write-protect-*.tgz
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dsh-write-protect
           path: |
@@ -170,13 +170,13 @@ jobs:
       contents: write
     steps:
       - name: 检出发布 tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.source_ref }}
           fetch-depth: 0
 
       - name: 下载构建产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dsh-write-protect
           path: release-artifacts
@@ -326,13 +326,13 @@ jobs:
       id-token: write
     steps:
       - name: 下载构建产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dsh-write-protect
           path: dist
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
