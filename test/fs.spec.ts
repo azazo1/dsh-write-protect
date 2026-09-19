@@ -135,6 +135,53 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
   })
 })
 
+describe('WriteProtectFileSystem 按模式判定 (不依赖展开清单)', () => {
+  it('启动后才出现的深层保护路径同样被拒绝', async () => {
+    await boot('workspace-write', ['gitdir'])
+    // 保护路径的枚举在 boot 时就完成了, 这里新建的目录从未进入过清单.
+    mkdirSync(join(workspace, 'later', 'gitdir'), { recursive: true })
+    await expect(fs.writeText(target(join(workspace, 'later', 'gitdir', 'config')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+  })
+
+  it('拒绝信息指出命中的模式与围栏起点', async () => {
+    await boot('workspace-write', ['gitdir'])
+    mkdirSync(join(workspace, 'gitdir'))
+    const error = await fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x').then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    expect((error as Error).message).toContain('matches "gitdir"')
+    expect((error as Error).message).toContain(join(workspace, 'gitdir'))
+  })
+
+  it('尾部 / 只挡目录: 同名文件可写, 目录内的写入仍拒绝', async () => {
+    await boot('workspace-write', ['gitdir/'])
+    mkdirSync(join(workspace, 'sub'))
+    mkdirSync(join(workspace, 'gitdir'))
+    // write/edit 的目标是文件: 只匹配目录的条目不该挡住同名文件.
+    await fs.writeText(target(join(workspace, 'sub', 'gitdir')), 'ok')
+    expect(await readFile(join(workspace, 'sub', 'gitdir'), 'utf8')).toBe('ok')
+    await expect(fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+  })
+
+  it('非锚定条目不越过工作区边界', async () => {
+    const other = join(base, 'other')
+    mkdirSync(join(other, 'gitdir'), { recursive: true })
+    await boot('workspace-write', ['gitdir'], ['../other'])
+    await fs.writeText(target(join(other, 'gitdir', 'config')), 'ok')
+    expect(await readFile(join(other, 'gitdir', 'config'), 'utf8')).toBe('ok')
+  })
+
+  it('policy.resolve() 注入生效的保护路径原文', async () => {
+    await boot('workspace-write', ['gitdir', 'secrets/*.pem'])
+    expect(ctx.sandboxPolicy.resolve().readOnlyPatterns).toBe('gitdir\nsecrets/*.pem')
+  })
+})
+
 describe('WriteProtectFileSystem 额外可写根', () => {
   it('workspace-write 下工作区外的额外根可写', async () => {
     const extra = join(base, 'extra')

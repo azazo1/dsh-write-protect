@@ -8,8 +8,12 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * 按官方结果包装 argv 后叠加额外可写根, 保护路径与 broker 逃逸加固.
    * Seatbelt 在两种模式下都要加固: `read-only` 的官方 profile 同样是
    * `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍不打穿它.
+   *
+   * 官方 Seam 的 `confine()` 自 0.1.6 起是异步的 (`Promise<ConfinedArgv>` 加一个
+   * `signal`): 本覆写必须是 async 并 await 官方结果, 否则 `result` 是 Promise,
+   * 读 `result.argv` 直接抛 TypeError, 走沙箱的每条命令都会失败 (沙箱看起来整个挂掉).
    */
-  confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv;
+  confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv>;
   /**
    * Seatbelt: 追加额外可写 allow (仅 `workspace-write`), 保护路径 deny, 最后是
    * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`.

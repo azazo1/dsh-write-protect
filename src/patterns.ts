@@ -1,261 +1,37 @@
 /**
- * 保护路径配置解析, 完全对齐 gitignore(5) 的模式语义: 多行文本, 每行一条,
- * `#` 注释, 空行忽略, `\` 转义 (`\#`, `\!`, 尾部空格用 `\ ` 保留), 尾部 `/`
- * 只匹配目录, 含开头或中间分隔符的条目锚定到工作区根 (每个会话各自解析),
- * 其余条目在任意层级匹配. 通配: `*` 与 `?` 不跨 `/`, `[...]` 字符类 (含
- * `[:alpha:]` 等 POSIX 类), `**` 仅在独立成段时递归 (开头 = 任意层级, 中间 =
- * 零或多层目录); 段内连续星号按普通 `*` 处理. `!` 取反按 gitignore 的
- * last-match-wins 顺序解释, 但前缀围栏模型与 gitignore 的目录剪枝一致:
- * 无法在仍受保护的目录内部重新放行后代; 展开时也不再走进这些目录.
+ * 保护路径的**枚举展开**: 把 `gitignore.ts` 解析出的模式针对某个工作区根枚举成
+ * 具体存在的路径, 供进程沙箱 (bwrap `--ro-bind` / Seatbelt `subpath`) 与提示词
+ * 使用 —— 它们必须拿到真实路径. write / edit 围栏不走这里, 而是直接按模式逐路径
+ * 判定 (`gitignore.ts` 的 `PatternSet.match`), 因此不受这里枚举预算的影响.
  *
- * 展开语义: 锚定字面条目是单一显式路径, 不存在也保留 (fs 围栏与 Seatbelt
- * 对不存在路径同样有效); 其余条目枚举展开时刻已存在的路径 (新建路径要等
- * 下次重新展开才纳入). 执法扩展: `//` 前缀表示文件系统绝对路径
- * (gitignore 没有这个形态, 部署配置需要); 以 `/**` 结尾的条目按前缀围栏
- * 等价性保护其命名目录本身, 而不是枚举全部后代. 展开遍历用 lstat, 不走进
- * 目录符号链接, 避免链到工作区外的大树 (如 `Applications -> /Applications`).
+ * 展开语义: 锚定字面条目是单一显式路径, 不存在也保留 (Seatbelt 对不存在路径同样
+ * 有效); 其余条目枚举展开时刻已存在的路径 (新建路径要等下次重新展开才纳入);
+ * 以 `/**` 结尾的条目按前缀围栏等价性保护其命名目录本身, 而不是枚举全部后代.
+ * 遍历用 lstat, 不走进目录符号链接, 避免链到工作区外的大树
+ * (如 `Applications -> /Applications`).
+ *
+ * 非锚定通配 (默认的 `.git`) 必须遍历工作区, 而 `policy.resolve()` 是同步契约:
+ * 同步展开有队列项与墙钟双重上限, 被截断的深层匹配由后台异步展开分片补齐,
+ * 两套驱动共用同一套遍历语义 (见 {@link walkGlobMatches}).
  * @module dsh-write-protect/patterns
  */
 
-import { lstatSync, readdirSync } from 'node:fs'
-import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep, type PlatformPath } from 'node:path'
+import { lstatSync, readdirSync, type Dirent } from 'node:fs'
+import { isAbsolute, parse as parsePath, resolve as resolvePath, sep, type PlatformPath } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
+import { EXPAND_ASYNC_BUDGET, EXPAND_ASYNC_CHUNK, EXPAND_ASYNC_MS, EXPAND_ASYNC_SLICE_MS, EXPAND_SYNC_BUDGET, EXPAND_SYNC_MS } from './constants.ts'
+import { compileEntry, isLiteralSegment, lastMatchKeeps, parsePatternLines, stripTrailingSpaces, toPosix, type Candidate, type CompiledEntry, type PatternEntry } from './gitignore.ts'
 import { escapesWithBackslash, expandTildeAndEnv, pathApiOf, type PathExpandOptions } from './path-expand.ts'
 
-/** 一条解析后的配置行. */
-export interface PatternEntry {
-  /** `!` 前缀的取反条目: last-match-wins 顺序下剔除匹配的展开结果. */
-  readonly negated: boolean
-  /** 尾部 `/`: 只匹配目录. */
-  readonly dirOnly: boolean
-  /** 含开头或中间分隔符: 锚定到工作区根, 不做任意层级匹配. */
-  readonly anchored: boolean
-  /** `//` 前缀: 文件系统绝对路径 (本插件的执法扩展). */
-  readonly fsAbsolute: boolean
-  /** 以 `/` 分段后的原始模式段 (未去转义, `**` 保留为独立段). */
-  readonly segments: readonly string[]
-  /** 解析后的条目原文 (去除 `!` 前缀与目录标记), 用于告警定位. */
-  readonly source: string
-}
-
-/** 候选保护路径: `isDir` 为 null 表示路径尚不存在 (无法判定目录性). */
-interface Candidate {
-  readonly path: string
-  readonly isDir: boolean | null
-}
-
-/** 展开结果: canonical 保护路径与展开过程中的告警. */
+/** 展开结果: canonical 保护路径, 展开过程中的告警与是否被预算截断. */
 export interface ExpandResult {
   readonly paths: readonly string[]
   readonly warnings: readonly string[]
-}
-
-/** 解析前的行预处理: 移除未转义的尾部空格 (gitignore 只忽略尾部空格). */
-function stripTrailingSpaces(line: string): string {
-  let end = line.length
-  while (end > 0 && line[end - 1] === ' ' && !isEscapedAt(line, end - 1)) end -= 1
-  return line.slice(0, end)
-}
-
-/** 位置 index 的字符是否被奇数个连续 `\` 转义. */
-function isEscapedAt(line: string, index: number): boolean {
-  let slashes = 0
-  for (let i = index - 1; i >= 0 && line[i] === '\\'; i -= 1) slashes += 1
-  return slashes % 2 === 1
-}
-
-/** 按未转义的 `/` 分段, 转义序列原样保留在段内. */
-function splitUnescaped(line: string): string[] {
-  const segments: string[] = []
-  let current = ''
-  let i = 0
-  while (i < line.length) {
-    const ch = line[i]!
-    if (ch === '\\' && i + 1 < line.length) {
-      current += ch + line[i + 1]!
-      i += 2
-      continue
-    }
-    if (ch === '/') {
-      segments.push(current)
-      current = ''
-      i += 1
-      continue
-    }
-    current += ch
-    i += 1
-  }
-  segments.push(current)
-  return segments
-}
-
-/**
- * 解析配置文本为条目列表: 跳过空行与 `#` 注释, 处理 `!` 前缀, 尾部 `/` 与
- * `//` 绝对扩展; 前导与中间的 `/` 使条目锚定到工作区根.
- */
-export function parsePatternLines(text: string): PatternEntry[] {
-  const entries: PatternEntry[] = []
-  for (const rawLine of text.split(/\r?\n/)) {
-    let line = stripTrailingSpaces(rawLine)
-    if (line.length === 0 || line.startsWith('#')) continue
-    const negated = line.startsWith('!')
-    if (negated) line = line.slice(1)
-    let dirOnly = false
-    while (line.length > 0 && line.endsWith('/') && !isEscapedAt(line, line.length - 1)) {
-      line = line.slice(0, -1)
-      dirOnly = true
-    }
-    let fsAbsolute = false
-    let anchored = false
-    if (line.startsWith('//')) {
-      fsAbsolute = true
-      anchored = true
-      line = line.slice(2)
-    } else if (line.startsWith('/')) {
-      anchored = true
-      line = line.slice(1)
-    }
-    const rawSegments = splitUnescaped(line)
-    if (!anchored && rawSegments.length > 1) anchored = true
-    const segments = rawSegments.filter(segment => segment.length > 0)
-    if (segments.length === 0) continue
-    entries.push({ negated, dirOnly, anchored, fsAbsolute, segments, source: line })
-  }
-  return entries
-}
-
-/** 段是否为字面段 (不含 glob 元字符与转义), 可直接按文本拼接. */
-function isLiteralSegment(segment: string): boolean {
-  return !/[*?[\]\\]/.test(segment)
-}
-
-function escapeRegExpChar(ch: string): string {
-  return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-const POSIX_CLASSES: Record<string, string> = {
-  alpha: 'A-Za-z',
-  alnum: '0-9A-Za-z',
-  digit: '0-9',
-  xdigit: '0-9A-Fa-f',
-  lower: 'a-z',
-  upper: 'A-Z',
-  space: '\\t\\n\\v\\f\\r ',
-  blank: ' \\t',
-  cntrl: '\\u0000-\\u001f\\u007f',
-  punct: '!-/:-@\\[-`{-~',
-  print: '\\x20-\\x7e',
-  graph: '\\x21-\\x7e',
-}
-
-function escapeClassChar(ch: string): string {
-  return /[\\\]^[]/.test(ch) ? `\\${ch}` : ch
-}
-
-/** 把 `[...]` 类编译为正则类片段; 未闭合时返回 undefined (按字面 `[` 处理). */
-function parseCharClass(pattern: string, start: number): { source: string, next: number } | undefined {
-  let i = start + 1
-  let negated = false
-  if (pattern[i] === '!' || pattern[i] === '^') {
-    negated = true
-    i += 1
-  }
-  let body = ''
-  let first = true
-  while (i < pattern.length) {
-    const ch = pattern[i]!
-    if (ch === ']' && !first) return { source: charClassSource(body, negated), next: i + 1 }
-    first = false
-    if (ch === '[' && pattern[i + 1] === ':') {
-      const end = pattern.indexOf(':]', i + 2)
-      if (end !== -1) {
-        body += pattern.slice(i, end + 2)
-        i = end + 2
-        continue
-      }
-    }
-    body += ch
-    i += 1
-  }
-  return undefined
-}
-
-/** 类体到正则片段: `/` 永不匹配 (FNM_PATHNAME), POSIX 类展开为显式范围. */
-function charClassSource(body: string, negated: boolean): string {
-  let inner = ''
-  let i = 0
-  while (i < body.length) {
-    if (body.startsWith('[:', i)) {
-      const end = body.indexOf(':]', i + 2)
-      const name = end === -1 ? undefined : body.slice(i + 2, end)
-      const range = name === undefined ? undefined : POSIX_CLASSES[name]
-      if (range !== undefined) {
-        inner += range
-        i = end! + 2
-        continue
-      }
-    }
-    inner += escapeClassChar(body[i]!)
-    i += 1
-  }
-  return `[${negated ? '^/' : ''}${inner}]`
-}
-
-/**
- * 把一个模式段编译为对单段路径名的全匹配正则 (段内不含真正的 `/`).
- * `\x` 转义为字面 x; `*` 为 `[^/]*`, `?` 为 `[^/]`, `[...]` 为字符类.
- */
-function segmentToRegExp(pattern: string, caseSensitive: boolean): RegExp {
-  let source = ''
-  let i = 0
-  while (i < pattern.length) {
-    const ch = pattern[i]!
-    if (ch === '\\' && i + 1 < pattern.length) {
-      source += escapeRegExpChar(pattern[i + 1]!)
-      i += 2
-      continue
-    }
-    if (ch === '*') {
-      source += '[^/]*'
-      i += 1
-      continue
-    }
-    if (ch === '?') {
-      source += '[^/]'
-      i += 1
-      continue
-    }
-    if (ch === '[') {
-      const cls = parseCharClass(pattern, i)
-      if (cls !== undefined) {
-        source += cls.source
-        i = cls.next
-        continue
-      }
-      source += '\\['
-      i += 1
-      continue
-    }
-    source += escapeRegExpChar(ch)
-    i += 1
-  }
-  return new RegExp(`^${source}$`, caseSensitive ? '' : 'i')
-}
-
-const GLOB_MATCH_CASE_SENSITIVE = process.platform !== 'win32'
-
-/** 一条编译后的条目: effective 已为非锚定条目补上虚拟 `**` 前缀. */
-interface CompiledEntry {
-  readonly entry: PatternEntry
-  readonly effective: readonly string[]
-  /** 与 effective 对齐的段匹配器, null 表示 `**` 段. */
-  readonly matchers: readonly (RegExp | null)[]
-}
-
-function compileEntry(entry: PatternEntry): CompiledEntry {
-  const effective = entry.anchored || entry.fsAbsolute ? entry.segments : ['**', ...entry.segments]
-  const matchers = effective.map(segment => segment === '**' ? null : segmentToRegExp(segment, GLOB_MATCH_CASE_SENSITIVE))
-  return { entry, effective, matchers }
+  /**
+   * 结果不完整: 同步遍历达到预算上限, 或异步遍历被 `shouldStop` 提前中止.
+   * 截断时 `paths` 仍是当时已找到的有效保护路径 (广度优先, 浅层优先).
+   */
+  readonly truncated?: boolean
 }
 
 /**
@@ -271,22 +47,51 @@ function statIsDir(path: string): boolean | null {
 }
 
 /**
+ * 读取一个目录的条目 (含类型). readdir 已经带回条目类型, 绝大多数情况下不必
+ * 再逐项 lstat, 让同一份预算覆盖更多路径. 读取失败按空目录处理.
+ */
+function readDirents(path: string): Dirent[] {
+  try {
+    return readdirSync(path, { withFileTypes: true })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 条目是否为目录 (lstat 语义: 指向目录的符号链接不算). readdir 在个别文件
+ * 系统上返回未知类型, 此时回退到 lstat, 保证不因省 lstat 而漏掉目录.
+ */
+function direntIsDirectory(dirent: Dirent, path: string): boolean {
+  if (dirent.isDirectory()) return true
+  if (
+    dirent.isFile() || dirent.isSymbolicLink() || dirent.isFIFO()
+    || dirent.isSocket() || dirent.isBlockDevice() || dirent.isCharacterDevice()
+  ) return false
+  return statIsDir(path) === true
+}
+
+/**
  * 枚举一个条目在 `start` 下匹配的现有路径 (POSIX 形态词法路径). 按队列
  * 广度优先展开: `**` 段按零或多层目录展开, 字面段直接拼接并以存在性剪枝,
  * 其余段用 readdir 过滤 (非末段要求目录), 末段按 `dirOnly` 过滤.
  * 已经会被保护的目录不再往里走 (里面的后代本来也写不了); 被取反放行的
  * 目录还会继续找. 目录符号链接不进入.
+ *
+ * 实现为生成器: 每处理一个队列项 yield 一次, 由同步 / 异步驱动决定步数上限与
+ * 是否在切片之间让出事件循环. 命中项经 `push` 交回调用方, 保证两个驱动共用
+ * 完全相同的遍历语义.
  */
-function collectGlobMatches(
+function* walkGlobMatches(
   effective: readonly string[],
   matchers: readonly (RegExp | null)[],
   dirOnly: boolean,
   start: string,
   compiledEntries: readonly CompiledEntry[],
   workspaceRoot: string,
-): Candidate[] {
+  push: (candidate: Candidate) => void,
+): Generator<void, void, void> {
   const isKeptDir = (path: string): boolean => lastMatchKeeps({ path, isDir: true }, compiledEntries, workspaceRoot)
-  const matches: Candidate[] = []
   const queue: { current: string, index: number }[] = [{ current: start, index: 0 }]
   let head = 0
 
@@ -299,137 +104,123 @@ function collectGlobMatches(
     if (matcher === null) {
       // `**` 段: 先把 "匹配零段" 入队, 再把现存子目录入队.
       queue.push({ current, index: index + 1 })
-      if (isKeptDir(current)) continue
-      let names: string[]
-      try {
-        names = readdirSync(current)
-      } catch {
-        continue
+      if (!isKeptDir(current)) {
+        for (const dirent of readDirents(current)) {
+          const child = `${current}/${dirent.name}`
+          if (!direntIsDirectory(dirent, child)) continue
+          if (isKeptDir(child)) continue
+          queue.push({ current: child, index })
+        }
       }
-      for (const name of names) {
-        const child = `${current}/${name}`
-        if (statIsDir(child) !== true) continue
-        if (isKeptDir(child)) continue
-        queue.push({ current: child, index })
-      }
-      continue
-    }
-    if (isLiteralSegment(segment)) {
+    } else if (isLiteralSegment(segment)) {
       const next = `${current}/${segment}`
       if (!last) {
         if (statIsDir(next) === true && !isKeptDir(next)) queue.push({ current: next, index: index + 1 })
-        continue
+      } else {
+        const isDir = statIsDir(next)
+        if (isDir !== null && (!dirOnly || isDir)) push({ path: next, isDir })
       }
-      const isDir = statIsDir(next)
-      if (isDir === null || (dirOnly && !isDir)) continue
-      matches.push({ path: next, isDir })
-      continue
-    }
-    if (isKeptDir(current)) continue
-    let names: string[]
-    try {
-      names = readdirSync(current)
-    } catch {
-      continue
-    }
-    for (const name of names) {
-      if (!matcher.test(name)) continue
-      const next = `${current}/${name}`
-      if (!last) {
-        if (statIsDir(next) !== true) continue
-        if (isKeptDir(next)) continue
-        queue.push({ current: next, index: index + 1 })
-        continue
+    } else if (!isKeptDir(current)) {
+      for (const dirent of readDirents(current)) {
+        if (!matcher.test(dirent.name)) continue
+        const next = `${current}/${dirent.name}`
+        if (!last) {
+          if (!direntIsDirectory(dirent, next)) continue
+          if (isKeptDir(next)) continue
+          queue.push({ current: next, index: index + 1 })
+        } else {
+          const isDir = statIsDir(next)
+          if (isDir !== null && (!dirOnly || isDir)) push({ path: next, isDir })
+        }
       }
-      const isDir = statIsDir(next)
-      if (isDir === null || (dirOnly && !isDir)) continue
-      matches.push({ path: next, isDir })
     }
+    yield
   }
-  return matches
 }
 
-function toPosix(path: string): string {
-  return process.platform === 'win32' ? path.replaceAll('\\', '/') : path
+/** 遍历预算: 队列项上限与墙钟截止时刻, 两者任一先到即停止. */
+interface WalkBudget {
+  remaining: number
+  /** 绝对时间戳; `Infinity` 表示不限时. */
+  deadline: number
 }
 
-function splitPosix(path: string): string[] {
-  return path.split('/').filter(segment => segment.length > 0)
-}
-
-/** 单条目对候选路径的匹配: 目录标记, 锚定形态与 `**` 递归全部生效. */
-function entryMatches(compiled: CompiledEntry, candidate: Candidate, workspaceRoot: string): boolean {
-  if (compiled.entry.dirOnly && candidate.isDir === false) return false
-  let segments: readonly string[]
-  if (compiled.entry.fsAbsolute) {
-    segments = splitPosix(toPosix(candidate.path))
-  } else {
-    const rel = relative(workspaceRoot, candidate.path)
-    if (rel.startsWith('..')) {
-      // 工作区外的候选只可能来自绝对条目, 相对锚定条目不再匹配.
-      if (compiled.entry.anchored && !compiled.entry.fsAbsolute) return false
-      segments = splitPosix(toPosix(candidate.path))
-    } else {
-      // 候选即工作区根本身时为空段序列, 让 `**` 类条目得以命中.
-      segments = rel === '' ? [] : splitPosix(toPosix(rel))
-    }
-  }
-  return matchSegments(compiled.effective, compiled.matchers, segments)
-}
-
-/** 段序列匹配: `**` 匹配零或多层, 其余段逐段全匹配 (带记忆化避免指数回溯). */
-function matchSegments(
-  effective: readonly string[],
-  matchers: readonly (RegExp | null)[],
-  segments: readonly string[],
-): boolean {
-  const failed = new Set<string>()
-  const walk = (pi: number, si: number): boolean => {
-    if (pi >= effective.length) return si === segments.length
-    const key = `${pi}:${si}`
-    if (failed.has(key)) return false
-    const matcher = matchers[pi]!
-    let ok: boolean
-    if (matcher === null) {
-      ok = walk(pi + 1, si) || (si < segments.length && walk(pi, si + 1))
-    } else if (si >= segments.length) {
-      ok = false
-    } else {
-      ok = matcher.test(segments[si]!) && walk(pi + 1, si + 1)
-    }
-    if (!ok) failed.add(key)
-    return ok
-  }
-  return walk(0, 0)
-}
-
-/** last-match-wins: 候选路径由顺序上最后命中的条目裁决去留. */
-function lastMatchKeeps(
-  candidate: Candidate,
-  compiledEntries: readonly CompiledEntry[],
-  workspaceRoot: string,
-): boolean {
-  let keeps = false
-  for (const compiled of compiledEntries) {
-    if (entryMatches(compiled, candidate, workspaceRoot)) keeps = !compiled.entry.negated
-  }
-  return keeps
+/** 同步驱动的最多看一项: 恰好跑完的遍历不该被误报为截断. */
+function lookaheadDone(generator: Generator<void, void, void>): boolean {
+  const lookahead = generator.next()
+  if (lookahead.done) return true
+  generator.return()
+  return false
 }
 
 /**
- * 把配置文本针对一次调用的工作区根展开为 canonical 保护路径, 语义对齐
- * gitignore(5): 锚定字面条目不存在也保留; 其余条目只收集展开时刻已存在的
- * 路径 (之后新建的路径要等下次展开才纳入). 已经会被保护的目录不往里走.
- * @param text - gitignore 语义的配置文本.
- * @param workspaceRoot - 本次调用的工作区根.
- * @returns canonical 保护路径 (去重) 与告警列表.
+ * 同步驱动: 最多处理 `budget.remaining` 个队列项, 且不超过墙钟截止时刻, 任一
+ * 到顶即停止. 停止前多看一项, 避免恰好跑完的遍历被误报为截断.
+ * @returns 是否完整跑完.
  */
-export function expandReadOnlyPaths(text: string, workspaceRoot: string): ExpandResult {
-  const warnings: string[] = []
-  const entries = parsePatternLines(text)
-  const compiledEntries = entries.map(compileEntry)
-  const candidates: Candidate[] = []
+function runWalkSync(generator: Generator<void, void, void>, budget: WalkBudget): boolean {
+  while (budget.remaining > 0 && Date.now() < budget.deadline) {
+    const step = generator.next()
+    if (step.done) return true
+    budget.remaining -= 1
+  }
+  return lookaheadDone(generator)
+}
 
+/** 异步驱动的切片参数: 每 `chunkEntries` 项或 `sliceMs` 毫秒让出一次事件循环. */
+interface AsyncWalkOptions {
+  readonly chunkEntries: number
+  readonly sliceMs: number
+  readonly budget: WalkBudget
+  readonly shouldStop?: (() => boolean) | undefined
+}
+
+/**
+ * 异步驱动: 按 {@link AsyncWalkOptions} 分片跑完遍历, 每个切片之间让出事件
+ * 循环, 因此再大的工作区也不会长时间独占事件循环. 队列项预算 / 墙钟上限到顶,
+ * 或 `shouldStop` 返回 true (服务已释放或配置已变化) 时中止.
+ * @returns 是否完整跑完.
+ */
+async function runWalkAsync(
+  generator: Generator<void, void, void>,
+  options: AsyncWalkOptions,
+): Promise<boolean> {
+  let sinceYield = 0
+  let sliceEnd = Date.now() + options.sliceMs
+  while (true) {
+    if (options.shouldStop?.() === true) {
+      generator.return()
+      return false
+    }
+    if (options.budget.remaining <= 0 || Date.now() >= options.budget.deadline) {
+      return lookaheadDone(generator)
+    }
+    const step = generator.next()
+    if (step.done) return true
+    options.budget.remaining -= 1
+    sinceYield += 1
+    if (sinceYield >= options.chunkEntries || Date.now() >= sliceEnd) {
+      sinceYield = 0
+      sliceEnd = Date.now() + options.sliceMs
+      await new Promise<void>((resolvePromise) => {
+        setImmediate(resolvePromise)
+      })
+    }
+  }
+}
+
+/** 一次展开里, 一个非取反条目的执行计划: 直接候选或一次广度优先遍历. */
+type EntryPlan =
+  | { readonly kind: 'direct', readonly candidate: Candidate }
+  | { readonly kind: 'walk', readonly build: (push: (candidate: Candidate) => void) => Generator<void, void, void> }
+
+/** 把非取反条目编译为执行计划, 顺序与配置文本一致 (last-match-wins 依赖它). */
+function planEntries(
+  entries: readonly PatternEntry[],
+  compiledEntries: readonly CompiledEntry[],
+  workspaceRoot: string,
+): EntryPlan[] {
+  const plans: EntryPlan[] = []
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!
     if (entry.negated) continue
@@ -439,7 +230,7 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
     while (end > 0 && compiled.effective[end - 1] === '**') end -= 1
     if (end === 0) {
       // `/**` (含裸 `**`): 前缀围栏下保护起始根本身.
-      candidates.push({ path: start, isDir: true })
+      plans.push({ kind: 'direct', candidate: { path: start, isDir: true } })
       continue
     }
     if (
@@ -448,19 +239,26 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
     ) {
       // 锚定字面条目: 单一显式路径, 不存在也保留词法形态.
       const path = resolvePath(entry.fsAbsolute ? '/' : workspaceRoot, entry.fsAbsolute ? `/${compiled.effective.join('/')}` : compiled.effective.join('/'))
-      candidates.push({ path, isDir: statIsDir(path) })
+      plans.push({ kind: 'direct', candidate: { path, isDir: statIsDir(path) } })
       continue
     }
-    candidates.push(...collectGlobMatches(
-      compiled.effective.slice(0, end),
-      compiled.matchers.slice(0, end),
-      entry.dirOnly || end < compiled.effective.length,
-      start,
-      compiledEntries,
-      workspaceRoot,
-    ))
+    const effective = compiled.effective.slice(0, end)
+    const matchers = compiled.matchers.slice(0, end)
+    const dirOnly = entry.dirOnly || end < compiled.effective.length
+    plans.push({
+      kind: 'walk',
+      build: push => walkGlobMatches(effective, matchers, dirOnly, start, compiledEntries, workspaceRoot, push),
+    })
   }
+  return plans
+}
 
+/** 候选去重 + canonical 化, 再按 last-match-wins 裁决去留. */
+function finalizeExpansion(
+  candidates: readonly Candidate[],
+  compiledEntries: readonly CompiledEntry[],
+  workspaceRoot: string,
+): string[] {
   const paths: string[] = []
   const seen = new Set<string>()
   for (const candidate of candidates) {
@@ -470,7 +268,122 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
     seen.add(canonical)
     paths.push(canonical)
   }
-  return { paths, warnings }
+  return paths
+}
+
+/** 遍历 (同步或异步) 未跑完时的统一告警文本. */
+function truncationWarning(workspaceRoot: string, budget: number): string {
+  return `wildcard expansion is incomplete under ${JSON.stringify(workspaceRoot)}: stopped at the ${String(budget)}-entry / time budget; the paths found so far still apply (breadth first, shallow first) and the deeper matches are filled in by the background pass — list deep matches as anchored entries (e.g. "/.git") to make them exact`
+}
+
+/**
+ * 把配置文本针对一次调用的工作区根展开为 canonical 保护路径, 语义对齐
+ * gitignore(5): 锚定字面条目不存在也保留; 其余条目只收集展开时刻已存在的
+ * 路径 (之后新建的路径要等下次展开才纳入). 已经会被保护的目录不往里走.
+ *
+ * 非锚定通配条目 (默认的 `.git`) 需要遍历工作区, 而本函数是同步接口
+ * (`resolve()` 的契约): 队列项预算与墙钟上限任一先到即停止遍历并把
+ * `truncated` 置为 true, 已找到的路径照常返回 (广度优先, 浅层优先 —— 工作区
+ * 根上的匹配基本是头几项就命中), 避免大工作区把 Host 事件循环卡住 —— 那会让
+ * 整个 `dsh web` 无响应. 需要完整结果时用 {@link expandReadOnlyPathsAsync};
+ * 锚定字面条目恒为 O(1), 不受预算影响.
+ * @param text - gitignore 语义的配置文本.
+ * @param workspaceRoot - 本次调用的工作区根.
+ * @param budget - 本次同步遍历允许的队列项数, 缺省 {@link EXPAND_SYNC_BUDGET}.
+ * @param maxMillis - 本次同步遍历的墙钟上限, 缺省 {@link EXPAND_SYNC_MS}.
+ * @returns canonical 保护路径 (去重), 告警列表与是否被预算截断.
+ */
+export function expandReadOnlyPaths(
+  text: string,
+  workspaceRoot: string,
+  budget: number = EXPAND_SYNC_BUDGET,
+  maxMillis: number = EXPAND_SYNC_MS,
+): ExpandResult {
+  const warnings: string[] = []
+  const entries = parsePatternLines(text)
+  const compiledEntries = entries.map(entry => compileEntry(entry))
+  const plans = planEntries(entries, compiledEntries, workspaceRoot)
+  const candidates: Candidate[] = []
+  const walkBudget: WalkBudget = {
+    remaining: Math.max(0, budget),
+    deadline: Number.isFinite(maxMillis) ? Date.now() + Math.max(0, maxMillis) : Number.POSITIVE_INFINITY,
+  }
+  let truncated = false
+
+  for (const plan of plans) {
+    if (plan.kind === 'direct') {
+      candidates.push(plan.candidate)
+      continue
+    }
+    const generator = plan.build(candidate => candidates.push(candidate))
+    if (!runWalkSync(generator, walkBudget)) {
+      truncated = true
+      // 预算已尽: 后续条目的直接候选仍要收集, 遍历计划会立即被截断.
+      if (walkBudget.remaining <= 0) continue
+    }
+  }
+
+  if (truncated) warnings.push(truncationWarning(workspaceRoot, budget))
+  return { paths: finalizeExpansion(candidates, compiledEntries, workspaceRoot), warnings, truncated }
+}
+
+/**
+ * {@link expandReadOnlyPaths} 的异步完整版本: 同一套遍历语义, 但没有"同步接口"
+ * 的短预算 —— 每 `chunkEntries` 项或 `sliceMs` 毫秒让出一次事件循环, 因此超大
+ * 工作区也不会阻塞 Host; 仍保留 {EXPAND_ASYNC_BUDGET} 项 / {@link EXPAND_ASYNC_MS}
+ * 毫秒的上限, 家目录级的根到顶就停并告警, 不做无休止的后台扫描.
+ * 供设置页预览 (HTTP handler 可以 await) 与 policy 的后台补全使用.
+ * @param text - gitignore 语义的配置文本.
+ * @param workspaceRoot - 本次调用的工作区根.
+ * @param options - 切片大小, 预算与中止判据 (服务释放或配置变化时提前结束).
+ * @returns 完整展开结果; 预算到顶或 `shouldStop` 触发时 `truncated` 为 true.
+ */
+export async function expandReadOnlyPathsAsync(
+  text: string,
+  workspaceRoot: string,
+  options: {
+    chunkEntries?: number
+    sliceMs?: number
+    budget?: number
+    maxMillis?: number
+    shouldStop?: (() => boolean) | undefined
+  } = {},
+): Promise<ExpandResult> {
+  const chunkEntries = Math.max(1, options.chunkEntries ?? EXPAND_ASYNC_CHUNK)
+  const sliceMs = Math.max(0, options.sliceMs ?? EXPAND_ASYNC_SLICE_MS)
+  const budget = Math.max(0, options.budget ?? EXPAND_ASYNC_BUDGET)
+  const maxMillis = options.maxMillis ?? EXPAND_ASYNC_MS
+  const entries = parsePatternLines(text)
+  const compiledEntries = entries.map(entry => compileEntry(entry))
+  const plans = planEntries(entries, compiledEntries, workspaceRoot)
+  const candidates: Candidate[] = []
+  let truncated = false
+  let aborted = false
+  const walkBudget: WalkBudget = {
+    remaining: budget,
+    deadline: Number.isFinite(maxMillis) ? Date.now() + Math.max(0, maxMillis) : Number.POSITIVE_INFINITY,
+  }
+
+  for (const plan of plans) {
+    if (options.shouldStop?.() === true) {
+      truncated = true
+      aborted = true
+      break
+    }
+    if (plan.kind === 'direct') {
+      candidates.push(plan.candidate)
+      continue
+    }
+    const generator = plan.build(candidate => candidates.push(candidate))
+    if (!await runWalkAsync(generator, { chunkEntries, sliceMs, budget: walkBudget, shouldStop: options.shouldStop })) {
+      truncated = true
+      aborted = options.shouldStop?.() === true
+      break
+    }
+  }
+  // 中止 (配置已变化) 不是"工作区太大", 不给出容易误导的预算告警.
+  const warnings = truncated && !aborted ? [truncationWarning(workspaceRoot, budget)] : []
+  return { paths: finalizeExpansion(candidates, compiledEntries, workspaceRoot), warnings, truncated }
 }
 
 /**
