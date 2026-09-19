@@ -21,16 +21,16 @@ afterAll(() => {
 })
 
 describe('previewPaths', () => {
-  it('列出生效的保护路径, 并把工作区内的额外根标为未生效', async () => {
-    const preview = await previewPaths('gitdir', 'src', ws)
+  it('列出生效的保护路径, 并把工作区内的额外根标为未生效', () => {
+    const preview = previewPaths('gitdir', 'src', ws)
     expect(preview.workspaceRoot).toBe(ws)
     expect(preview.readOnly).toEqual([join(ws, 'gitdir')])
     expect(preview.writable).toEqual([])
     expect(preview.warnings.some(item => item.includes('already inside the workspace'))).toBe(true)
   })
 
-  it('额外可写根展开进 preview.writable', async () => {
-    const preview = await previewPaths('', extra, ws)
+  it('额外可写根展开进 preview.writable', () => {
+    const preview = previewPaths('', extra, ws)
     expect(preview.writable).toEqual([extra])
     expect(preview.warnings).toEqual([])
   })

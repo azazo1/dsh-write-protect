@@ -6,7 +6,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
-import { expandReadOnlyPaths, expandReadOnlyPathsAsync, expandWritablePaths } from '../src/patterns.ts'
+import { expandReadOnlyPaths, expandWritablePaths } from '../src/patterns.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
 let ws: string
@@ -149,59 +149,6 @@ describe('expandReadOnlyPaths 杂项', () => {
     // `./src/nested/..` 词法归一后与 `src` 相同, 去重为一条.
     const { paths } = expandReadOnlyPaths('src\n./src/nested/..', ws)
     expect(paths).toEqual([join(ws, 'src')])
-  })
-})
-
-describe('expandReadOnlyPaths 预算与异步补全', () => {
-  it('队列项预算到顶时截断并告警, 已收集的浅层匹配立即生效', () => {
-    const { paths, warnings, truncated } = expandReadOnlyPaths('gitdir', ws, 1)
-    expect(truncated).toBe(true)
-    // 广度优先: 工作区根上的匹配在头两项内就命中.
-    expect(paths).toEqual([join(ws, 'gitdir')])
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('incomplete')
-    expect(warnings[0]).toContain('anchored entries')
-  })
-
-  it('墙钟上限为 0 时同步遍历不进入循环, 只保留锚定字面条目', () => {
-    const truncated = expandReadOnlyPaths('gitdir', ws, Number.POSITIVE_INFINITY, 0)
-    expect(truncated.truncated).toBe(true)
-    expect(truncated.paths).toEqual([])
-    const anchored = expandReadOnlyPaths('/gitdir\ngitdir', ws, Number.POSITIVE_INFINITY, 0)
-    expect(anchored.paths).toEqual([join(ws, 'gitdir')])
-  })
-
-  it('预算够大时不截断, 也不告警', () => {
-    const { paths, warnings, truncated } = expandReadOnlyPaths('gitdir', ws, 100_000)
-    expect(truncated).toBe(false)
-    expect(warnings).toEqual([])
-    expect(paths).toContain(join(ws, 'gitdir'))
-  })
-
-  it('异步展开与同步展开语义一致 (分片大小不影响结果)', async () => {
-    const sync = expandReadOnlyPaths('gitdir\n!src/nested/gitdir', ws, 100_000)
-    const async = await expandReadOnlyPathsAsync('gitdir\n!src/nested/gitdir', ws, {
-      chunkEntries: 1,
-      sliceMs: 0,
-      budget: 100_000,
-    })
-    expect(async.paths).toEqual(sync.paths)
-    expect(async.truncated).toBe(false)
-    expect(async.warnings).toEqual([])
-  })
-
-  it('异步展开到顶同样截断并给出同一条告警', async () => {
-    const { paths, warnings, truncated } = await expandReadOnlyPathsAsync('gitdir', ws, { budget: 0 })
-    expect(truncated).toBe(true)
-    expect(paths).toEqual([])
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('incomplete')
-  })
-
-  it('shouldStop 中止不算"工作区太大", 不给预算告警', async () => {
-    const { truncated, warnings } = await expandReadOnlyPathsAsync('gitdir', ws, { shouldStop: () => true })
-    expect(truncated).toBe(true)
-    expect(warnings).toEqual([])
   })
 })
 

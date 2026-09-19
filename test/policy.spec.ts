@@ -3,12 +3,9 @@
 // 契约做 base -> 用户 section 的分层, 并用注册时的 schema 校验解析结果.
 
 import { Context } from '@deepseek-ai/cordis'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../src/constants.ts'
+import { describe, expect, it } from 'vitest'
+import { HARDEN_BROKER_FIELD, PATTERNS_FIELD } from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
-import { projectTmpDir } from './fixture-root.ts'
 
 /** schemastery schema 的可调用形态 (校验/套用默认值). */
 type SectionSchema = ((value: Record<string, unknown>) => Record<string, unknown>) & { toJSON?: () => unknown }
@@ -88,7 +85,7 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
   it('resolve() 注入生效的保护路径原文, 供 fs 围栏按模式判定', async () => {
     const { policy, settings } = await setup({ readOnlyPaths: ['.git', 'secrets/*.pem'] })
     expect(policy.resolve({}).readOnlyPatterns).toBe('.git\nsecrets/*.pem')
-    // 用户保存过的文本覆盖部署 base: 原文随之切换 (枚举清单可能被预算截断, 原文不会).
+    // 用户保存过的文本覆盖部署 base: 原文随之切换, fs 围栏按新文本匹配.
     settings.save({ [PATTERNS_FIELD]: '/secrets' })
     expect(policy.resolve({}).readOnlyPatterns).toBe('/secrets')
   })
@@ -100,42 +97,5 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     // 文本换成 /secrets 后 .git 不再受保护 (锚定字面条目即使不存在也保留).
     expect(resolved.readOnlyPaths).toEqual(['/ws/secrets'])
     expect(resolved.hardenBroker).toBe(false)
-  })
-})
-
-describe('WriteProtectPolicyService 的有界展开', () => {
-  let bigRoot: string
-
-  beforeAll(() => {
-    // 目录数超过同步项数预算 (EXPAND_SYNC_BUDGET), 让同步展开必然被截断;
-    // .git 放在最深层, 只有后台异步补全才会找到它.
-    bigRoot = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-big-')))
-    for (let index = 0; index < 900; index += 1) {
-      mkdirSync(join(bigRoot, `d${String(index).padStart(4, '0')}`))
-    }
-    mkdirSync(join(bigRoot, 'd0899', '.git'))
-  })
-
-  afterAll(() => {
-    rmSync(bigRoot, { recursive: true, force: true })
-  })
-
-  it('同步 resolve() 被预算截断时先给浅层结果并告警, 后台补全后深层匹配出现', async () => {
-    const { policy } = await setup({ workspaceRoot: bigRoot, readOnlyPaths: ['.git'] })
-    const first = policy.resolve({})
-    // 同步遍历有界: 不能因为工作区大就把 Host 事件循环拖住.
-    expect(first.readOnlyPaths).toEqual([])
-
-    const target = join(bigRoot, 'd0899', '.git')
-    const deadline = Date.now() + 5000
-    let found: readonly string[] = []
-    while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 25))
-      found = policy.resolve({}).readOnlyPaths ?? []
-      if (found.includes(target)) break
-    }
-    expect(found).toContain(target)
-    // 后台结果不会被后续更差的同步部分结果覆盖.
-    expect(policy.resolve({}).readOnlyPaths).toContain(target)
   })
 })

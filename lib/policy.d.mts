@@ -49,26 +49,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private readonly writableBaseEntries;
   private readonly hardenBrokerBase;
   private settingsOwner;
-  /**
-   * 每个 (两份文本, 工作区根) 的展开结果. 结果只增不减: 同步展开是被预算
-   * 截断的浅层子集, 后台补全的完整结果按并集合并进来. 合并是安全的 ——
-   * 去留由同一条 last-match-wins 谓词决定, 两次展开的差异只在"访问到哪些
-   * 候选", 所以并集不会重新放行被取反剔除的路径; 反过来, 也不能用更差的
-   * 同步部分结果覆盖已经拿到的完整结果, 否则保护范围会在两个值之间反复跳.
-   *
-   * `status` 决定重算节奏: `partial` 走短 TTL (同步遍历有界, 重算便宜, 能尽快
-   * 纳入新建路径); `complete` 与 `exhausted` 走长 TTL —— 后者表示后台补全
-   * 也到顶了, 对同一个根不再做无望的全量扫描.
-   */
-  private readonly expanded;
-  /** 上一次后台补全结束的时间, 用于限制后台全量补全的启动频率. */
-  private fullExpandedAt;
-  /** 后台补全的在飞标记; 配置 / 工作区根变化时靠 generation 丢弃过期结果. */
-  private fullRefresh;
-  /** 已判定"超出异步补全预算"的工作区根: 不再反复做无望的全量扫描. */
-  private readonly exhaustedRoots;
-  private generation;
-  private disposed;
+  private cache;
   private readonly warned;
   constructor(ctx: Context, config: Config);
   /** 部署 base 的保护路径文本形态 (patch 数组逐行合并). */
@@ -81,26 +62,12 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private currentWritableText;
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker;
-  /** 逐条告警, 同一文本只出现一次. */
-  private warnAll;
   /**
    * 展开当前生效文本为 canonical 保护路径与额外可写根, 按
-   * (两份文本, 工作区根) 缓存; 同时给出生效的保护路径**原文** (fs 围栏按它逐条
-   * 匹配, 不依赖枚举) 与枚举是否被截断.
-   *
-   * 同步展开有队列项与墙钟双重上限 (`resolve()` 是同步契约, 不能阻塞 Host
-   * 事件循环): 结果被截断时先返回已找到的浅层匹配并告警, 同时把该根交给
-   * {@link expandInBackground} 在后台按分片补齐, 补齐结果与已有结果取并集.
-   * 完整结果只覆盖不丢失: 更差的同步部分结果不会把已拿到的深层匹配置换掉.
+   * (两份文本, 工作区根) 做 TTL 缓存. 同时给出生效的保护路径原文, 给
+   * write / edit 围栏按模式逐条匹配. 展开告警对每条只告警一次.
    */
   private snapshot;
-  /**
-   * 后台把被同步预算截断的根补齐: 同一时刻只跑一个 (全量遍历很贵), 且启动
-   * 间隔不小于 {@link EXPAND_FULL_TTL_MS}. 补全结果与既有结果取并集后写回;
-   * 到顶仍不完整 (家目录级工作区) 则记为该根已放弃, 只保留告警给出的"改用
-   * 锚定条目"建议. 结果经 generation 校验, 服务释放或配置变化时直接丢弃.
-   */
-  private expandInBackground;
   /**
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
    * 追加注入保护路径 (枚举形态给进程沙箱, 原文给 write/edit 围栏), 额外可写根

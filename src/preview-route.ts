@@ -79,7 +79,7 @@ export function mountPreviewRoute(
           ? fallbackRoot
           : resolvePreviewRoot(requestedRoot)
         return Response.json({
-          ...await previewPaths(draft.patterns, draft.writablePatterns, workspaceRoot),
+          ...previewPaths(draft.patterns, draft.writablePatterns, workspaceRoot),
           workspaceSource: requestedRoot === undefined ? 'fallback' : 'session',
         })
       } catch (error: unknown) {

@@ -15,9 +15,8 @@ import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
-import { DEFAULT_HARDEN_BROKER, DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS, EXPAND_FULL_TTL_MS, HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, PROMPT_CONTEXT_ORDER, WRITABLE_FIELD } from './constants.ts'
-import { expandReadOnlyPaths, expandReadOnlyPathsAsync, expandWritablePaths } from './patterns.ts'
-import { parsePatternLines } from './gitignore.ts'
+import { DEFAULT_HARDEN_BROKER, DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS, HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, PROMPT_CONTEXT_ORDER, WRITABLE_FIELD } from './constants.ts'
+import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
 import { mountPreviewRoute, type PreviewConnection } from './preview-route.ts'
 
 export const name = 'dsh-write-protect-policy'
@@ -53,30 +52,6 @@ export interface Config {
 /** 展开结果的缓存有效时长: resolve 每个 tool call 都会调用, glob 枚举有 IO 成本. */
 const EXPAND_TTL_MS = 5000
 
-/** 缓存条目按状态取 TTL: 部分结果短 TTL, 完整 / 已放弃补全的结果长 TTL. */
-function ttlOf(status: 'partial' | 'complete' | 'exhausted'): number {
-  return status === 'partial' ? EXPAND_TTL_MS : EXPAND_FULL_TTL_MS
-}
-
-/**
- * 同一份配置 / 工作区根两次展开结果的并集 (保序去重). 去留由同一条
- * last-match-wins 谓词决定, 两次展开的差异只在"访问到哪些候选", 因此并集
- * 不会把被取反剔除的路径重新纳入; 反过来它能保证"已经发现的深层匹配"不被
- * 后续更差的同步部分结果覆盖掉.
- */
-function mergePaths(previous: readonly string[] | undefined, next: readonly string[]): readonly string[] {
-  if (previous === undefined || previous.length === 0) return next
-  if (next.length === 0) return previous
-  const merged: string[] = [...previous]
-  const seen = new Set(previous)
-  for (const path of next) {
-    if (seen.has(path)) continue
-    seen.add(path)
-    merged.push(path)
-  }
-  return merged
-}
-
 export class WriteProtectPolicyService extends SandboxPolicyService {
   // 内联 schema 调用: config catalog 会静态遍历 `static Config`.
   static Config = z.object({
@@ -91,31 +66,19 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   private readonly writableBaseEntries: readonly string[]
   private readonly hardenBrokerBase: boolean
   private settingsOwner: SettingsScope<WriteProtectSettings> | undefined
-  /**
-   * 每个 (两份文本, 工作区根) 的展开结果. 结果只增不减: 同步展开是被预算
-   * 截断的浅层子集, 后台补全的完整结果按并集合并进来. 合并是安全的 ——
-   * 去留由同一条 last-match-wins 谓词决定, 两次展开的差异只在"访问到哪些
-   * 候选", 所以并集不会重新放行被取反剔除的路径; 反过来, 也不能用更差的
-   * 同步部分结果覆盖已经拿到的完整结果, 否则保护范围会在两个值之间反复跳.
-   *
-   * `status` 决定重算节奏: `partial` 走短 TTL (同步遍历有界, 重算便宜, 能尽快
-   * 纳入新建路径); `complete` 与 `exhausted` 走长 TTL —— 后者表示后台补全
-   * 也到顶了, 对同一个根不再做无望的全量扫描.
-   */
-  private readonly expanded = new Map<string, {
+  private cache: {
     at: number
+    key: string
     readOnly: readonly string[]
     writable: readonly string[]
-    status: 'partial' | 'complete' | 'exhausted'
-  }>()
-  /** 上一次后台补全结束的时间, 用于限制后台全量补全的启动频率. */
-  private fullExpandedAt = 0
-  /** 后台补全的在飞标记; 配置 / 工作区根变化时靠 generation 丢弃过期结果. */
-  private fullRefresh: { key: string, generation: number } | undefined
-  /** 已判定"超出异步补全预算"的工作区根: 不再反复做无望的全量扫描. */
-  private readonly exhaustedRoots = new Set<string>()
-  private generation = 0
-  private disposed = false
+    patterns: string
+  } = {
+    at: 0,
+    key: '',
+    readOnly: [],
+    writable: [],
+    patterns: '',
+  }
   private readonly warned = new Set<string>()
 
   constructor(ctx: Context, config: Config) {
@@ -136,13 +99,6 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     this.writableBaseEntries = writableEntries
     this.hardenBrokerBase = config.hardenBroker ?? DEFAULT_HARDEN_BROKER
 
-    // 服务释放后停掉在飞的后台展开, 不让它继续占用事件循环.
-    ctx.effect(() => () => {
-      this.disposed = true
-      this.generation += 1
-      this.fullRefresh = undefined
-    }, 'dsh-write-protect: stop background expansion')
-
     // Web 设置页的持久化配置: composition base 是 patch 的数组与开关, 用户保存过
     // 的值覆盖对应字段; 编辑后缓存失效实时生效.
     ctx.inject(['settings'], (scope: Context) => {
@@ -155,11 +111,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       })
       this.settingsOwner = owner
       owner.watch(() => {
-        // generation 递增让在飞的后台补全作废; 新文本的根需要重新评估.
-        this.generation += 1
-        this.fullRefresh = undefined
-        this.exhaustedRoots.clear()
-        this.expanded.clear()
+        this.cache = { at: 0, key: '', readOnly: [], writable: [], patterns: '' }
       })
     })
 
@@ -174,16 +126,10 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
             agent?: { session?: NonNullable<Parameters<SandboxPolicyService['resolve']>[0]>['session'] }
           }).agent?.session
           if (session === undefined) return ''
-          const { readOnly, writable, patterns, truncated } = this.snapshot(this.resolve({ session }).workspaceRoot)
+          const { readOnly, writable } = this.snapshot(this.resolve({ session }).workspaceRoot)
           const parts: string[] = []
-          if (!truncated && readOnly.length > 0) {
-            // 枚举完整时列具体路径最省事, 与 write/edit 的实际围栏一致.
+          if (readOnly.length > 0) {
             parts.push(`Write-protected paths (all DSH-enforced operations deny writes beneath them; reads stay allowed): ${JSON.stringify(readOnly)}.`)
-          } else if (truncated) {
-            // 枚举被预算截断: write/edit 按模式拦全部匹配, 命令侧只钉住了浅层路径,
-            // 两者不一致必须说清楚, 否则模型会以为深层匹配不受保护.
-            const sources = parsePatternLines(patterns).map(entry => `${entry.negated ? '!' : ''}${entry.source}`)
-            parts.push(`Write-protected patterns (gitignore semantics; the write/edit tools deny every matching path, reads stay allowed): ${JSON.stringify(sources)}. Sandboxed commands additionally pin these resolved locations: ${JSON.stringify(readOnly)} — incomplete, only the shallowest matches could be enumerated; deeper matches stay write-protected for the tools but are not pinned for commands, so use anchored entries such as "/.git" if commands must be blocked there too.`)
           }
           if (writable.length > 0) {
             parts.push(`Additional writable roots under workspace-write (sandboxed commands and write/edit tools may write here; write-protected paths still win; does not apply in read-only): ${JSON.stringify(writable)}.`)
@@ -231,99 +177,39 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return typeof value === 'boolean' ? value : this.hardenBrokerBase
   }
 
-  /** 逐条告警, 同一文本只出现一次. */
-  private warnAll(warnings: readonly string[]): void {
-    for (const warning of warnings) {
-      if (this.warned.has(warning)) continue
-      this.warned.add(warning)
-      this.ctx.logger?.warn?.(`dsh-write-protect: ${warning}`)
-    }
-  }
-
   /**
    * 展开当前生效文本为 canonical 保护路径与额外可写根, 按
-   * (两份文本, 工作区根) 缓存; 同时给出生效的保护路径**原文** (fs 围栏按它逐条
-   * 匹配, 不依赖枚举) 与枚举是否被截断.
-   *
-   * 同步展开有队列项与墙钟双重上限 (`resolve()` 是同步契约, 不能阻塞 Host
-   * 事件循环): 结果被截断时先返回已找到的浅层匹配并告警, 同时把该根交给
-   * {@link expandInBackground} 在后台按分片补齐, 补齐结果与已有结果取并集.
-   * 完整结果只覆盖不丢失: 更差的同步部分结果不会把已拿到的深层匹配置换掉.
+   * (两份文本, 工作区根) 做 TTL 缓存. 同时给出生效的保护路径原文, 给
+   * write / edit 围栏按模式逐条匹配. 展开告警对每条只告警一次.
    */
   private snapshot(workspaceRoot: string): {
     readOnly: readonly string[]
     writable: readonly string[]
     patterns: string
-    truncated: boolean
   } {
     const readOnlyText = this.currentText()
     const writableText = this.currentWritableText()
     const key = `${readOnlyText}\u0000${writableText}\u0000${workspaceRoot}`
     const now = Date.now()
-    const previous = this.expanded.get(key)
-    if (previous !== undefined && now - previous.at < ttlOf(previous.status)) {
-      return {
-        readOnly: previous.readOnly,
-        writable: previous.writable,
-        patterns: readOnlyText,
-        truncated: previous.status !== 'complete',
-      }
+    if (now - this.cache.at < EXPAND_TTL_MS && this.cache.key === key) {
+      return { readOnly: this.cache.readOnly, writable: this.cache.writable, patterns: this.cache.patterns }
     }
     const readOnly = expandReadOnlyPaths(readOnlyText, workspaceRoot)
     const writable = expandWritablePaths(writableText, workspaceRoot)
-    this.warnAll([...readOnly.warnings, ...writable.warnings])
-    const truncated = readOnly.truncated === true
-    const status = !truncated
-      ? 'complete'
-      : previous === undefined || previous.status === 'partial' ? 'partial' : previous.status
-    const next = {
+    for (const warning of [...readOnly.warnings, ...writable.warnings]) {
+      if (!this.warned.has(warning)) {
+        this.warned.add(warning)
+        this.ctx.logger?.warn?.(`dsh-write-protect: ${warning}`)
+      }
+    }
+    this.cache = {
       at: now,
-      readOnly: mergePaths(previous?.readOnly, readOnly.paths),
+      key,
+      readOnly: readOnly.paths,
       writable: writable.paths,
-      status,
-    } as const
-    this.expanded.set(key, next)
-    if (truncated) this.expandInBackground(key, readOnlyText, workspaceRoot, writable.paths)
-    return { readOnly: next.readOnly, writable: next.writable, patterns: readOnlyText, truncated: status !== 'complete' }
-  }
-
-  /**
-   * 后台把被同步预算截断的根补齐: 同一时刻只跑一个 (全量遍历很贵), 且启动
-   * 间隔不小于 {@link EXPAND_FULL_TTL_MS}. 补全结果与既有结果取并集后写回;
-   * 到顶仍不完整 (家目录级工作区) 则记为该根已放弃, 只保留告警给出的"改用
-   * 锚定条目"建议. 结果经 generation 校验, 服务释放或配置变化时直接丢弃.
-   */
-  private expandInBackground(
-    key: string,
-    readOnlyText: string,
-    workspaceRoot: string,
-    writable: readonly string[],
-  ): void {
-    if (this.disposed || this.fullRefresh !== undefined) return
-    if (this.exhaustedRoots.has(workspaceRoot)) return
-    if (Date.now() - this.fullExpandedAt < EXPAND_FULL_TTL_MS) return
-    const generation = this.generation
-    this.fullRefresh = { key, generation }
-    void expandReadOnlyPathsAsync(readOnlyText, workspaceRoot, {
-      shouldStop: () => this.disposed || this.generation !== generation,
-    }).then((result) => {
-      this.fullRefresh = undefined
-      this.fullExpandedAt = Date.now()
-      if (this.disposed || this.generation !== generation) return
-      this.warnAll(result.warnings)
-      if (result.truncated === true) this.exhaustedRoots.add(workspaceRoot)
-      const previous = this.expanded.get(key)
-      this.expanded.set(key, {
-        at: Date.now(),
-        readOnly: mergePaths(previous?.readOnly, result.paths),
-        writable: previous?.writable ?? writable,
-        status: result.truncated === true ? 'exhausted' : 'complete',
-      })
-    }, (error: unknown) => {
-      this.fullRefresh = undefined
-      this.fullExpandedAt = Date.now()
-      this.ctx.logger?.warn?.(`dsh-write-protect: background expansion failed: ${error instanceof Error ? error.message : String(error)}`)
-    })
+      patterns: readOnlyText,
+    }
+    return { readOnly: readOnly.paths, writable: writable.paths, patterns: readOnlyText }
   }
 
   /**
