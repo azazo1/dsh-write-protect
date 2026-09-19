@@ -15,7 +15,7 @@ dsh plugin --profile web add azazo1/dsh-write-protect
 固定版本:
 
 ```shell
-dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.2
+dsh plugin --profile web add azazo1/dsh-write-protect#v0.1.1
 ```
 
 GitHub Release 同时挂不带版本号的预构建包, 安装时跳过 `allowBuilds`:
@@ -23,16 +23,6 @@ GitHub Release 同时挂不带版本号的预构建包, 安装时跳过 `allowBu
 ```shell
 dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/releases/latest/download/dsh-write-protect.tgz
 ```
-
-本地检出用一键脚本 (`scripts/install.sh`, Linux / macOS, 可传 profile 名, 默认 `web`):
-
-```shell
-./scripts/install.sh              # 装进 web profile
-./scripts/install.sh headless     # 装进指定 profile
-./scripts/install.sh --dsh-home ~/.dsh --profile web
-```
-
-脚本是检出内工具, 不随 npm 包发布. 它先把当前检出拷进 `<profile>/plugins/dsh-write-protect` 再 `dsh plugin add` 注册. 必须先复制: 就地 link 的检出会被 Node 解析回真实路径, 从检出目录向上走不到宿主自己的 `@deepseek-ai/*`, boot 会报 `Cannot find package '@deepseek-ai/dsh-sandbox-local'`. 从 npm / GitHub 安装没有这个问题 (pnpm 会把包物化在 profile 里). 复制会跳过 `.git` / `node_modules` / `.tmp` / `dist` / `.agent`; profile 模板本身关掉了 peer 自动安装 (`autoInstallPeers: false`), 所以宿主提供的 `@deepseek-ai/*` 不会被装进 profile 遮蔽宿主. 装完重启应用生效.
 
 安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`.
 
@@ -166,8 +156,6 @@ just build      # 构建 lib/
 just test       # 测试套件 (Seatbelt e2e 仅在 macOS 上运行)
 just verify     # 以上全流程 + 打包预览
 ```
-
-改完源码想在真实 DSH 里手工验证时, 先 `just build`, 再用 `./scripts/install.sh` 把当前检出装进 profile (脚本装的是 `lib/`, 源码比产物新时会提醒).
 
 源码分三块, 边界是"有没有文件系统依赖":
 
