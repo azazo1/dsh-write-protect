@@ -2,10 +2,11 @@
  * 替换 base 的 `sandbox-policy` 行: 在官方 `SandboxPolicyService` 之上增加
  * `readOnlyPaths` 与 `writablePaths`. 保护路径以 gitignore 语义的多行文本
  * 声明, 额外可写根是字面路径列表 (见 `patterns.ts`). 来源按优先级取值:
- * Web 设置页编辑过的用户配置覆盖 patch 数组 (部署 base). 解析结果带 TTL
- * 缓存, 每次 resolve() 注入逐次调用的 policy, 作为 fs 围栏与进程沙箱
- * provider 共同消费的单一事实来源; 同时注册一个 systemPrompt context,
- * 让模型在写入之前就知道哪些路径受保护, 哪些额外根可写.
+ * Web 设置页编辑过的用户配置覆盖 patch 数组 (部署 base). 枚举结果带 TTL
+ * 缓存; `resolve()` 是同步契约, 只注入模式原文, 额外可写根, 以及缓存里已有
+ * 的枚举路径, 不在这里等完整扫盘. 进程沙箱走 `materialize()`, 设置页预览
+ * 走异步展开; write / edit 围栏按模式判定, 不依赖清单. 同时注册一个
+ * systemPrompt context, 让模型在写入之前就知道哪些模式受保护, 哪些额外根可写.
  * @module dsh-write-protect/policy
  */
 
@@ -49,8 +50,19 @@ export interface Config {
   hardenBroker?: boolean
 }
 
-/** 展开结果的缓存有效时长: resolve 每个 tool call 都会调用, glob 枚举有 IO 成本. */
-const EXPAND_TTL_MS = 5000
+/**
+ * 枚举结果的缓存有效时长. write / edit 不靠这份清单, 长一点能避免大工作区
+ * 上每次 bash 都重扫; 新建的匹配目录仍由模式围栏挡住, 只是进程沙箱要等下次
+ * materialize 才把路径编进 bind / profile.
+ */
+const EXPAND_TTL_MS = 60_000
+
+/** 一次枚举得到的保护路径, 额外可写根, 以及当时生效的保护路径原文. */
+export interface PathSnapshot {
+  readonly readOnly: readonly string[]
+  readonly writable: readonly string[]
+  readonly patterns: string
+}
 
 export class WriteProtectPolicyService extends SandboxPolicyService {
   // 内联 schema 调用: config catalog 会静态遍历 `static Config`.
@@ -80,6 +92,8 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     patterns: '',
   }
   private readonly warned = new Set<string>()
+  private inflight: { key: string, promise: Promise<PathSnapshot> } | undefined
+  private generation = 0
 
   constructor(ctx: Context, config: Config) {
     super(ctx, config)
@@ -111,6 +125,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       })
       this.settingsOwner = owner
       owner.watch(() => {
+        this.generation += 1
         this.cache = { at: 0, key: '', readOnly: [], writable: [], patterns: '' }
       })
     })
@@ -126,11 +141,13 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
             agent?: { session?: NonNullable<Parameters<SandboxPolicyService['resolve']>[0]>['session'] }
           }).agent?.session
           if (session === undefined) return ''
-          const { readOnly, writable } = this.snapshot(this.resolve({ session }).workspaceRoot)
+          const policy = this.resolve({ session })
+          const patterns = this.currentText().trim()
           const parts: string[] = []
-          if (readOnly.length > 0) {
-            parts.push(`Write-protected paths (all DSH-enforced operations deny writes beneath them; reads stay allowed): ${JSON.stringify(readOnly)}.`)
+          if (patterns.length > 0) {
+            parts.push(`Write-protected patterns (gitignore semantics; all DSH-enforced operations deny writes beneath matching paths; reads stay allowed): ${JSON.stringify(patterns)}.`)
           }
+          const writable = policy.writablePaths ?? []
           if (writable.length > 0) {
             parts.push(`Additional writable roots under workspace-write (sandboxed commands and write/edit tools may write here; write-protected paths still win; does not apply in read-only): ${JSON.stringify(writable)}.`)
           }
@@ -178,23 +195,40 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   }
 
   /**
-   * 展开当前生效文本为 canonical 保护路径与额外可写根, 按
-   * (两份文本, 工作区根) 做 TTL 缓存. 同时给出生效的保护路径原文, 给
-   * write / edit 围栏按模式逐条匹配. 展开告警对每条只告警一次.
+   * 异步展开当前生效文本. 同一 (两份文本, 工作区根) 的进行中请求会合到一次
+   * 遍历上; 结果按 TTL 缓存. 展开告警对每条只告警一次.
    */
-  private snapshot(workspaceRoot: string): {
-    readOnly: readonly string[]
-    writable: readonly string[]
-    patterns: string
-  } {
+  async materialize(workspaceRoot: string): Promise<PathSnapshot> {
     const readOnlyText = this.currentText()
     const writableText = this.currentWritableText()
     const key = `${readOnlyText}\u0000${writableText}\u0000${workspaceRoot}`
-    const now = Date.now()
-    if (now - this.cache.at < EXPAND_TTL_MS && this.cache.key === key) {
-      return { readOnly: this.cache.readOnly, writable: this.cache.writable, patterns: this.cache.patterns }
+    const cached = this.peek(key)
+    if (cached !== undefined) return cached
+    if (this.inflight?.key === key) return this.inflight.promise
+    const generation = this.generation
+    const promise = this.expandNow(workspaceRoot, key, readOnlyText, writableText, generation)
+    this.inflight = { key, promise }
+    try {
+      return await promise
+    } finally {
+      if (this.inflight?.promise === promise) this.inflight = undefined
     }
-    const readOnly = expandReadOnlyPaths(readOnlyText, workspaceRoot)
+  }
+
+  /** 缓存命中且未过期时返回快照, 否则 undefined. */
+  private peek(key: string): PathSnapshot | undefined {
+    if (Date.now() - this.cache.at >= EXPAND_TTL_MS || this.cache.key !== key) return undefined
+    return { readOnly: this.cache.readOnly, writable: this.cache.writable, patterns: this.cache.patterns }
+  }
+
+  private async expandNow(
+    workspaceRoot: string,
+    key: string,
+    readOnlyText: string,
+    writableText: string,
+    generation: number,
+  ): Promise<PathSnapshot> {
+    const readOnly = await expandReadOnlyPaths(readOnlyText, workspaceRoot)
     const writable = expandWritablePaths(writableText, workspaceRoot)
     for (const warning of [...readOnly.warnings, ...writable.warnings]) {
       if (!this.warned.has(warning)) {
@@ -202,30 +236,35 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
         this.ctx.logger?.warn?.(`dsh-write-protect: ${warning}`)
       }
     }
-    this.cache = {
-      at: now,
-      key,
+    const snapshot: PathSnapshot = {
       readOnly: readOnly.paths,
       writable: writable.paths,
       patterns: readOnlyText,
     }
-    return { readOnly: readOnly.paths, writable: writable.paths, patterns: readOnlyText }
+    if (this.generation === generation) {
+      this.cache = { at: Date.now(), key, ...snapshot }
+    }
+    return snapshot
   }
 
   /**
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
-   * 追加注入保护路径 (枚举形态给进程沙箱, 原文给 write/edit 围栏), 额外可写根
-   * 与 broker 加固开关.
+   * 追加注入保护路径原文 (给 write/edit 围栏), 额外可写根, broker 加固开关,
+   * 以及缓存里已有的枚举路径 (给进程沙箱). 同步契约不允许在这里等完整扫盘;
+   * 冷缓存时 `readOnlyPaths` 为空, `confine()` 会 await {@link materialize}.
    * @param request - 可选的会话与已批准的模式覆盖.
    * @returns 带有 `readOnlyPatterns` / `readOnlyPaths` / `writablePaths` /
    * `hardenBroker` 的完整逐次调用 policy.
    */
   override resolve(request: Parameters<SandboxPolicyService['resolve']>[0] = {}): SandboxExecutionPolicy {
     const policy = super.resolve(request)
-    const { readOnly, writable, patterns } = this.snapshot(policy.workspaceRoot)
-    policy.readOnlyPatterns = patterns
-    policy.readOnlyPaths = readOnly
-    policy.writablePaths = writable
+    const readOnlyText = this.currentText()
+    const writableText = this.currentWritableText()
+    const key = `${readOnlyText}\u0000${writableText}\u0000${policy.workspaceRoot}`
+    const cached = this.peek(key)
+    policy.readOnlyPatterns = readOnlyText
+    policy.readOnlyPaths = cached?.readOnly ?? []
+    policy.writablePaths = cached?.writable ?? expandWritablePaths(writableText, policy.workspaceRoot).paths
     policy.hardenBroker = this.currentHardenBroker()
     return policy
   }

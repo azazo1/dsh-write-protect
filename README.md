@@ -102,7 +102,7 @@ $HOME/scratch
 
 ## 保护范围
 
-保护路径与额外可写根会同时作用在下面几个入口, 解析结果是同一份:
+保护路径与额外可写根会同时作用在下面几个入口:
 
 | 入口 | 哪些系统 | 效果 |
 |---|---|---|
@@ -111,7 +111,7 @@ $HOME/scratch
 | 提示词 | 全平台 | 先告诉模型哪些不能写, 哪些额外根可写 |
 | macOS broker 加固 | macOS | 堵住 `open` 经 launchd 把命令挪到沙箱外执行 |
 
-两类入口的判定方式不同, 这是有意的: write / edit 拿得到目标路径, 因此直接按 gitignore 模式判定 —— 深层嵌套、尚未存在的匹配一样挡得住, 每条写入只做几次正则; bash 的沙箱 (mount / profile) 只能吃具体路径, 所以那一侧才需要枚举展开.
+两类入口的判定方式不同, 这是有意的: write / edit 拿得到目标路径, 因此直接按 gitignore 模式判定 —— 深层嵌套, 尚未存在的匹配一样挡得住, 每条写入只做几次正则; bash 的沙箱 (mount / profile) 只能吃具体路径, 所以那一侧才需要枚举展开. 枚举走 `fs.promises`, 每次 readdir / lstat 让出事件循环; 同步的 `resolve()` 只注入模式原文和缓存里已有的路径, 不在会话加载时扫盘. 提示词同样只陈述模式, 不枚举绝对路径.
 
 主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式.
 
@@ -159,7 +159,7 @@ just verify     # 以上全流程 + 打包预览
 | 文件 | 职责 | 依赖 |
 |---|---|---|
 | `src/gitignore.ts` | gitignore 语义的解析、编译与**逐路径匹配** (含 `PatternSet.match`), write / edit 围栏的判定核心 | 纯字符串/正则, **零运行时依赖** |
-| `src/patterns.ts` | 把模式**枚举**成具体路径, 供 bash 沙箱与提示词使用 | `node:fs`、`canonicalPath` |
+| `src/patterns.ts` | 把模式**枚举**成具体路径, 供 bash 沙箱使用 | `node:fs/promises`、`canonicalPath` |
 | `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱 policy、进程沙箱 argv 叠加 | DSH 引擎 |
 
 `src/path-expand.ts` 负责额外可写根的字面路径展开 (`~` / 环境变量 / 平台差异).

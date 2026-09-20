@@ -29,94 +29,94 @@ afterAll(() => {
 })
 
 describe('expandReadOnlyPaths 锚定语义', () => {
-  it('不含分隔符的条目在任意层级匹配 (gitignore 非锚定语义)', () => {
+  it('不含分隔符的条目在任意层级匹配 (gitignore 非锚定语义)', async () => {
     mkdirSync(join(ws, 'src', 'nested', 'gitdir'), { recursive: true })
-    const { paths } = expandReadOnlyPaths('gitdir', ws)
+    const { paths } = await expandReadOnlyPaths('gitdir', ws)
     expect(paths).toEqual([join(ws, 'gitdir'), join(ws, 'src', 'nested', 'gitdir')])
   })
 
-  it('锚定条目只匹配工作区根下的对应路径', () => {
-    const { paths } = expandReadOnlyPaths('/gitdir', ws)
+  it('锚定条目只匹配工作区根下的对应路径', async () => {
+    const { paths } = await expandReadOnlyPaths('/gitdir', ws)
     expect(paths).toEqual([join(ws, 'gitdir')])
   })
 
-  it('锚定字面条目不存在时保留词法形态, 非锚定条目只收集存在路径', () => {
-    expect(expandReadOnlyPaths('/dist/a.txt', ws).paths).toEqual([join(ws, 'dist', 'a.txt')])
-    expect(expandReadOnlyPaths('node_modules', ws).paths).toEqual([])
+  it('锚定字面条目不存在时保留词法形态, 非锚定条目只收集存在路径', async () => {
+    expect((await expandReadOnlyPaths('/dist/a.txt', ws)).paths).toEqual([join(ws, 'dist', 'a.txt')])
+    expect((await expandReadOnlyPaths('node_modules', ws)).paths).toEqual([])
   })
 
-  it('// 前缀条目按文件系统绝对路径展开', () => {
-    expect(expandReadOnlyPaths(`//${ws}/keystore.bin`, ws).paths).toEqual([join(ws, 'keystore.bin')])
-    expect(expandReadOnlyPaths(`//${ws}/secret*`, ws).paths).toEqual([join(ws, 'secrets')])
+  it('// 前缀条目按文件系统绝对路径展开', async () => {
+    expect((await expandReadOnlyPaths(`//${ws}/keystore.bin`, ws)).paths).toEqual([join(ws, 'keystore.bin')])
+    expect((await expandReadOnlyPaths(`//${ws}/secret*`, ws)).paths).toEqual([join(ws, 'secrets')])
   })
 })
 
 describe('expandReadOnlyPaths glob 语义', () => {
-  it('* 匹配单段内任意字符, ? 匹配单字符, 都不跨段', () => {
+  it('* 匹配单段内任意字符, ? 匹配单字符, 都不跨段', async () => {
     const a = join(ws, 'secrets', 'a.pem')
     const b = join(ws, 'secrets', 'b.pem')
-    expect(expandReadOnlyPaths('secrets/*.pem', ws).paths).toEqual([a, b])
-    expect(expandReadOnlyPaths('secrets/?.pem', ws).paths).toEqual([a, b])
+    expect((await expandReadOnlyPaths('secrets/*.pem', ws)).paths).toEqual([a, b])
+    expect((await expandReadOnlyPaths('secrets/?.pem', ws)).paths).toEqual([a, b])
   })
 
-  it('段内连续星号按普通 * 处理', () => {
-    expect(expandReadOnlyPaths('secret**', ws).paths).toEqual([join(ws, 'secrets')])
+  it('段内连续星号按普通 * 处理', async () => {
+    expect((await expandReadOnlyPaths('secret**', ws)).paths).toEqual([join(ws, 'secrets')])
   })
 
-  it('[...] 字符类含取反与 POSIX 类形式', () => {
+  it('[...] 字符类含取反与 POSIX 类形式', async () => {
     const a = join(ws, 'secrets', 'a.pem')
     const b = join(ws, 'secrets', 'b.pem')
-    expect(expandReadOnlyPaths('secrets/[ab].pem', ws).paths).toEqual([a, b])
-    expect(expandReadOnlyPaths('secrets/[!ab].pem', ws).paths).toEqual([])
-    expect(expandReadOnlyPaths('secrets/[[:alpha:]].pem', ws).paths).toEqual([a, b])
-    expect(expandReadOnlyPaths('secrets/[[:digit:]].pem', ws).paths).toEqual([])
+    expect((await expandReadOnlyPaths('secrets/[ab].pem', ws)).paths).toEqual([a, b])
+    expect((await expandReadOnlyPaths('secrets/[!ab].pem', ws)).paths).toEqual([])
+    expect((await expandReadOnlyPaths('secrets/[[:alpha:]].pem', ws)).paths).toEqual([a, b])
+    expect((await expandReadOnlyPaths('secrets/[[:digit:]].pem', ws)).paths).toEqual([])
   })
 
-  it('** 独立成段时匹配零或多层目录', () => {
-    expect(expandReadOnlyPaths('src/**/nested', ws).paths).toEqual([join(ws, 'src', 'nested')])
+  it('** 独立成段时匹配零或多层目录', async () => {
+    expect((await expandReadOnlyPaths('src/**/nested', ws)).paths).toEqual([join(ws, 'src', 'nested')])
   })
 
-  it('尾部 / 只匹配目录', () => {
-    expect(expandReadOnlyPaths('secret*/', ws).paths).toEqual([join(ws, 'secrets')])
-    expect(expandReadOnlyPaths('keystore.bin/', ws).paths).toEqual([])
+  it('尾部 / 只匹配目录', async () => {
+    expect((await expandReadOnlyPaths('secret*/', ws)).paths).toEqual([join(ws, 'secrets')])
+    expect((await expandReadOnlyPaths('keystore.bin/', ws)).paths).toEqual([])
   })
 
-  it('尾部 /** 保护命名目录本身, 裸 ** 保护起始根本身', () => {
-    expect(expandReadOnlyPaths('secrets/**', ws).paths).toEqual([join(ws, 'secrets')])
-    expect(expandReadOnlyPaths('/**', ws).paths).toEqual([ws])
+  it('尾部 /** 保护命名目录本身, 裸 ** 保护起始根本身', async () => {
+    expect((await expandReadOnlyPaths('secrets/**', ws)).paths).toEqual([join(ws, 'secrets')])
+    expect((await expandReadOnlyPaths('/**', ws)).paths).toEqual([ws])
   })
 })
 
 describe('expandReadOnlyPaths 取反 (last-match-wins)', () => {
-  it('! 条目剔除顺序靠前的展开结果', () => {
-    const { paths } = expandReadOnlyPaths('secrets/*.pem\n!secrets/b.pem', ws)
+  it('! 条目剔除顺序靠前的展开结果', async () => {
+    const { paths } = await expandReadOnlyPaths('secrets/*.pem\n!secrets/b.pem', ws)
     expect(paths).toEqual([join(ws, 'secrets', 'a.pem')])
   })
 
-  it('靠后的正向条目重新纳入被取反的路径', () => {
-    const { paths } = expandReadOnlyPaths('!secrets/b.pem\nsecrets/*.pem', ws)
+  it('靠后的正向条目重新纳入被取反的路径', async () => {
+    const { paths } = await expandReadOnlyPaths('!secrets/b.pem\nsecrets/*.pem', ws)
     expect(paths).toEqual([join(ws, 'secrets', 'a.pem'), join(ws, 'secrets', 'b.pem')])
   })
 
-  it('目录标记的取反不影响同名文件', () => {
-    const { paths } = expandReadOnlyPaths('keystore.bin\n!keystore.bin/', ws)
+  it('目录标记的取反不影响同名文件', async () => {
+    const { paths } = await expandReadOnlyPaths('keystore.bin\n!keystore.bin/', ws)
     expect(paths).toEqual([join(ws, 'keystore.bin')])
   })
 
-  it('锚定取反剔除深层展开结果', () => {
+  it('锚定取反剔除深层展开结果', async () => {
     mkdirSync(join(ws, 'src', 'nested', 'gitdir'), { recursive: true })
-    const { paths } = expandReadOnlyPaths('**/gitdir\n!src/nested/gitdir', ws)
+    const { paths } = await expandReadOnlyPaths('**/gitdir\n!src/nested/gitdir', ws)
     expect(paths).toEqual([join(ws, 'gitdir')])
   })
 
-  it('已保护的目录不再往里找, 被取反的目录还会继续找', () => {
+  it('已保护的目录不再往里找, 被取反的目录还会继续找', async () => {
     mkdirSync(join(ws, 'gitdir', 'inner', 'gitdir'), { recursive: true })
     mkdirSync(join(ws, 'src', 'nested', 'gitdir', 'deep', 'gitdir'), { recursive: true })
-    expect(expandReadOnlyPaths('gitdir', ws).paths).toEqual([
+    expect((await expandReadOnlyPaths('gitdir', ws)).paths).toEqual([
       join(ws, 'gitdir'),
       join(ws, 'src', 'nested', 'gitdir'),
     ])
-    expect(expandReadOnlyPaths('gitdir\n!src/nested/gitdir', ws).paths).toEqual([
+    expect((await expandReadOnlyPaths('gitdir\n!src/nested/gitdir', ws)).paths).toEqual([
       join(ws, 'gitdir'),
       join(ws, 'src', 'nested', 'gitdir', 'deep', 'gitdir'),
     ])
@@ -124,10 +124,10 @@ describe('expandReadOnlyPaths 取反 (last-match-wins)', () => {
 })
 
 describe('expandReadOnlyPaths 目录符号链接', () => {
-  it('不走进目录符号链接, 只收集真实目录上的匹配', () => {
+  it('不走进目录符号链接, 只收集真实目录上的匹配', async () => {
     mkdirSync(join(ws, 'real', 'gitdir'), { recursive: true })
     symlinkSync(join(ws, 'real'), join(ws, 'linkdir'))
-    const { paths } = expandReadOnlyPaths('gitdir', ws)
+    const { paths } = await expandReadOnlyPaths('gitdir', ws)
     expect(paths).toContain(join(ws, 'gitdir'))
     expect(paths).toContain(join(ws, 'real', 'gitdir'))
     expect(paths).not.toContain(join(ws, 'linkdir', 'gitdir'))
@@ -135,19 +135,19 @@ describe('expandReadOnlyPaths 目录符号链接', () => {
 })
 
 describe('expandReadOnlyPaths 杂项', () => {
-  it('空文本与纯注释展开为空列表', () => {
-    const { paths } = expandReadOnlyPaths('# 只有一段注释\n\n   \n', ws)
+  it('空文本与纯注释展开为空列表', async () => {
+    const { paths } = await expandReadOnlyPaths('# 只有一段注释\n\n   \n', ws)
     expect(paths).toEqual([])
   })
 
-  it('常规展开不产生告警', () => {
-    const { warnings } = expandReadOnlyPaths('/gitdir\nsecrets/*', ws)
+  it('常规展开不产生告警', async () => {
+    const { warnings } = await expandReadOnlyPaths('/gitdir\nsecrets/*', ws)
     expect(warnings).toEqual([])
   })
 
-  it('canonical 化并去重: 不同写法的同一目标只保留一条', () => {
+  it('canonical 化并去重: 不同写法的同一目标只保留一条', async () => {
     // `./src/nested/..` 词法归一后与 `src` 相同, 去重为一条.
-    const { paths } = expandReadOnlyPaths('src\n./src/nested/..', ws)
+    const { paths } = await expandReadOnlyPaths('src\n./src/nested/..', ws)
     expect(paths).toEqual([join(ws, 'src')])
   })
 })

@@ -15,6 +15,11 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    */
   confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv>;
   /**
+   * 进程沙箱需要枚举路径. 生产路径上 policy 带 `readOnlyPatterns`, 走
+   * `materialize()` 等完整异步展开; 单测直接塞 `readOnlyPaths` 时沿用那份清单.
+   */
+  private overlayPaths;
+  /**
    * Seatbelt: 追加额外可写 allow (仅 `workspace-write`), 保护路径 deny, 最后是
    * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`.
    * `hardenBroker` 被显式关掉时只跳过 broker 拒绝形式, 命令按官方 profile 运行.

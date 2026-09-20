@@ -94,8 +94,11 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     const { policy, settings } = await setup({ readOnlyPaths: ['.git'] })
     settings.save({ [PATTERNS_FIELD]: '/secrets', [HARDEN_BROKER_FIELD]: false })
     const resolved = policy.resolve({})
-    // 文本换成 /secrets 后 .git 不再受保护 (锚定字面条目即使不存在也保留).
-    expect(resolved.readOnlyPaths).toEqual(['/ws/secrets'])
+    expect(resolved.readOnlyPatterns).toBe('/secrets')
     expect(resolved.hardenBroker).toBe(false)
+    // resolve() 是同步契约, 冷缓存不扫盘; 枚举路径要等 materialize().
+    expect(resolved.readOnlyPaths).toEqual([])
+    await policy.materialize('/ws')
+    expect(policy.resolve({}).readOnlyPaths).toEqual(['/ws/secrets'])
   })
 })

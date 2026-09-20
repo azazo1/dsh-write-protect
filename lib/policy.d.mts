@@ -31,6 +31,12 @@ export interface Config {
    */
   hardenBroker?: boolean;
 }
+/** 一次枚举得到的保护路径, 额外可写根, 以及当时生效的保护路径原文. */
+export interface PathSnapshot {
+  readonly readOnly: readonly string[];
+  readonly writable: readonly string[];
+  readonly patterns: string;
+}
 export declare class WriteProtectPolicyService extends SandboxPolicyService {
   static Config: z<Schemastery.ObjectS<{
     mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access">;
@@ -51,6 +57,8 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private settingsOwner;
   private cache;
   private readonly warned;
+  private inflight;
+  private generation;
   constructor(ctx: Context, config: Config);
   /** 部署 base 的保护路径文本形态 (patch 数组逐行合并). */
   private baseText;
@@ -63,15 +71,18 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker;
   /**
-   * 展开当前生效文本为 canonical 保护路径与额外可写根, 按
-   * (两份文本, 工作区根) 做 TTL 缓存. 同时给出生效的保护路径原文, 给
-   * write / edit 围栏按模式逐条匹配. 展开告警对每条只告警一次.
+   * 异步展开当前生效文本. 同一 (两份文本, 工作区根) 的进行中请求会合到一次
+   * 遍历上; 结果按 TTL 缓存. 展开告警对每条只告警一次.
    */
-  private snapshot;
+  materialize(workspaceRoot: string): Promise<PathSnapshot>;
+  /** 缓存命中且未过期时返回快照, 否则 undefined. */
+  private peek;
+  private expandNow;
   /**
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
-   * 追加注入保护路径 (枚举形态给进程沙箱, 原文给 write/edit 围栏), 额外可写根
-   * 与 broker 加固开关.
+   * 追加注入保护路径原文 (给 write/edit 围栏), 额外可写根, broker 加固开关,
+   * 以及缓存里已有的枚举路径 (给进程沙箱). 同步契约不允许在这里等完整扫盘;
+   * 冷缓存时 `readOnlyPaths` 为空, `confine()` 会 await {@link materialize}.
    * @param request - 可选的会话与已批准的模式覆盖.
    * @returns 带有 `readOnlyPatterns` / `readOnlyPaths` / `writablePaths` /
    * `hardenBroker` 的完整逐次调用 policy.

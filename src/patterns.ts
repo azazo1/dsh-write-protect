@@ -1,18 +1,23 @@
 /**
  * 保护路径的**枚举展开**: 把 `gitignore.ts` 解析出的模式针对某个工作区根枚举成
- * 具体存在的路径, 供进程沙箱 (bwrap `--ro-bind` / Seatbelt `subpath`) 与提示词
- * 使用 —— 它们必须拿到真实路径. write / edit 围栏不走这里, 而是直接按模式逐路径
- * 判定 (`gitignore.ts` 的 `PatternSet.match`).
+ * 具体存在的路径, 供进程沙箱 (bwrap `--ro-bind` / Seatbelt `subpath`) 使用 ——
+ * 它们必须拿到真实路径. write / edit 围栏和提示词不走这里: 前者按模式逐路径
+ * 判定 (`gitignore.ts` 的 `PatternSet.match`), 后者直接给出模式原文.
  *
  * 展开语义: 锚定字面条目是单一显式路径, 不存在也保留 (Seatbelt 对不存在路径同样
  * 有效); 其余条目枚举展开时刻已存在的路径 (新建路径要等下次重新展开才纳入);
  * 以 `/**` 结尾的条目按前缀围栏等价性保护其命名目录本身, 而不是枚举全部后代.
  * 遍历用 lstat, 不走进目录符号链接, 避免链到工作区外的大树
  * (如 `Applications -> /Applications`).
+ *
+ * 遍历是异步的 (`fs.promises`), 每次 readdir / lstat 都会把事件循环让出去.
+ * `policy.resolve()` 是同步契约, 不能在这里等完整结果; 由 `materialize()` /
+ * 预览 / `confine()` 这些已经是 async 的入口来 await.
  * @module dsh-write-protect/patterns
  */
 
-import { lstatSync, readdirSync, type Dirent } from 'node:fs'
+import { type Dirent } from 'node:fs'
+import { lstat, readdir } from 'node:fs/promises'
 import { resolve as resolvePath, type PlatformPath } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import { compileEntry, isLiteralSegment, lastMatchKeeps, parsePatternLines, stripTrailingSpaces, toPosix, type Candidate, type CompiledEntry, type PatternEntry } from './gitignore.ts'
@@ -28,9 +33,9 @@ export interface ExpandResult {
  * 目录性检查: 用 lstat, 不跟随符号链接. 路径不存在时返回 null; 指向目录的
  * 链接视为非目录, 展开时不走进去.
  */
-function statIsDir(path: string): boolean | null {
+async function statIsDir(path: string): Promise<boolean | null> {
   try {
-    return lstatSync(path).isDirectory()
+    return (await lstat(path)).isDirectory()
   } catch {
     return null
   }
@@ -40,9 +45,9 @@ function statIsDir(path: string): boolean | null {
  * 读取一个目录的条目 (含类型). readdir 已经带回条目类型, 绝大多数情况下不必
  * 再逐项 lstat. 读取失败按空目录处理.
  */
-function readDirents(path: string): Dirent[] {
+async function readDirents(path: string): Promise<Dirent[]> {
   try {
-    return readdirSync(path, { withFileTypes: true })
+    return await readdir(path, { withFileTypes: true })
   } catch {
     return []
   }
@@ -52,13 +57,13 @@ function readDirents(path: string): Dirent[] {
  * 条目是否为目录 (lstat 语义: 指向目录的符号链接不算). readdir 在个别文件
  * 系统上返回未知类型, 此时回退到 lstat, 保证不因省 lstat 而漏掉目录.
  */
-function direntIsDirectory(dirent: Dirent, path: string): boolean {
+async function direntIsDirectory(dirent: Dirent, path: string): Promise<boolean> {
   if (dirent.isDirectory()) return true
   if (
     dirent.isFile() || dirent.isSymbolicLink() || dirent.isFIFO()
     || dirent.isSocket() || dirent.isBlockDevice() || dirent.isCharacterDevice()
   ) return false
-  return statIsDir(path) === true
+  return await statIsDir(path) === true
 }
 
 /**
@@ -68,7 +73,7 @@ function direntIsDirectory(dirent: Dirent, path: string): boolean {
  * 已经会被保护的目录不再往里走 (里面的后代本来也写不了); 被取反放行的
  * 目录还会继续找. 目录符号链接不进入.
  */
-function walkGlobMatches(
+async function walkGlobMatches(
   effective: readonly string[],
   matchers: readonly (RegExp | null)[],
   dirOnly: boolean,
@@ -76,7 +81,7 @@ function walkGlobMatches(
   compiledEntries: readonly CompiledEntry[],
   workspaceRoot: string,
   push: (candidate: Candidate) => void,
-): void {
+): Promise<void> {
   const isKeptDir = (path: string): boolean => lastMatchKeeps({ path, isDir: true }, compiledEntries, workspaceRoot)
   const queue: { current: string, index: number }[] = [{ current: start, index: 0 }]
   let head = 0
@@ -91,9 +96,9 @@ function walkGlobMatches(
       // `**` 段: 先把 "匹配零段" 入队, 再把现存子目录入队.
       queue.push({ current, index: index + 1 })
       if (!isKeptDir(current)) {
-        for (const dirent of readDirents(current)) {
+        for (const dirent of await readDirents(current)) {
           const child = `${current}/${dirent.name}`
-          if (!direntIsDirectory(dirent, child)) continue
+          if (!await direntIsDirectory(dirent, child)) continue
           if (isKeptDir(child)) continue
           queue.push({ current: child, index })
         }
@@ -101,21 +106,21 @@ function walkGlobMatches(
     } else if (isLiteralSegment(segment)) {
       const next = `${current}/${segment}`
       if (!last) {
-        if (statIsDir(next) === true && !isKeptDir(next)) queue.push({ current: next, index: index + 1 })
+        if ((await statIsDir(next)) === true && !isKeptDir(next)) queue.push({ current: next, index: index + 1 })
       } else {
-        const isDir = statIsDir(next)
+        const isDir = await statIsDir(next)
         if (isDir !== null && (!dirOnly || isDir)) push({ path: next, isDir })
       }
     } else if (!isKeptDir(current)) {
-      for (const dirent of readDirents(current)) {
+      for (const dirent of await readDirents(current)) {
         if (!matcher.test(dirent.name)) continue
         const next = `${current}/${dirent.name}`
         if (!last) {
-          if (!direntIsDirectory(dirent, next)) continue
+          if (!await direntIsDirectory(dirent, next)) continue
           if (isKeptDir(next)) continue
           queue.push({ current: next, index: index + 1 })
         } else {
-          const isDir = statIsDir(next)
+          const isDir = await statIsDir(next)
           if (isDir !== null && (!dirOnly || isDir)) push({ path: next, isDir })
         }
       }
@@ -126,14 +131,14 @@ function walkGlobMatches(
 /** 一次展开里, 一个非取反条目的执行计划: 直接候选或一次广度优先遍历. */
 type EntryPlan =
   | { readonly kind: 'direct', readonly candidate: Candidate }
-  | { readonly kind: 'walk', readonly run: (push: (candidate: Candidate) => void) => void }
+  | { readonly kind: 'walk', readonly run: (push: (candidate: Candidate) => void) => Promise<void> }
 
 /** 把非取反条目编译为执行计划, 顺序与配置文本一致 (last-match-wins 依赖它). */
-function planEntries(
+async function planEntries(
   entries: readonly PatternEntry[],
   compiledEntries: readonly CompiledEntry[],
   workspaceRoot: string,
-): EntryPlan[] {
+): Promise<EntryPlan[]> {
   const plans: EntryPlan[] = []
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!
@@ -153,7 +158,7 @@ function planEntries(
     ) {
       // 锚定字面条目: 单一显式路径, 不存在也保留词法形态.
       const path = resolvePath(entry.fsAbsolute ? '/' : workspaceRoot, entry.fsAbsolute ? `/${compiled.effective.join('/')}` : compiled.effective.join('/'))
-      plans.push({ kind: 'direct', candidate: { path, isDir: statIsDir(path) } })
+      plans.push({ kind: 'direct', candidate: { path, isDir: await statIsDir(path) } })
       continue
     }
     const effective = compiled.effective.slice(0, end)
@@ -193,11 +198,11 @@ function finalizeExpansion(
  * @param workspaceRoot - 本次调用的工作区根.
  * @returns canonical 保护路径 (去重) 与告警列表.
  */
-export function expandReadOnlyPaths(text: string, workspaceRoot: string): ExpandResult {
+export async function expandReadOnlyPaths(text: string, workspaceRoot: string): Promise<ExpandResult> {
   const warnings: string[] = []
   const entries = parsePatternLines(text)
   const compiledEntries = entries.map(entry => compileEntry(entry))
-  const plans = planEntries(entries, compiledEntries, workspaceRoot)
+  const plans = await planEntries(entries, compiledEntries, workspaceRoot)
   const candidates: Candidate[] = []
 
   for (const plan of plans) {
@@ -205,7 +210,7 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
       candidates.push(plan.candidate)
       continue
     }
-    plan.run(candidate => candidates.push(candidate))
+    await plan.run(candidate => candidates.push(candidate))
   }
 
   return { paths: finalizeExpansion(candidates, compiledEntries, workspaceRoot), warnings }

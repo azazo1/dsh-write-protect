@@ -130,7 +130,9 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
   it('policy.resolve() 注入 canonical 化且去重的 readOnlyPaths', async () => {
     mkdirSync(join(workspace, 'gitdir'))
     await boot('workspace-write', ['gitdir', 'gitdir', `//${join(workspace, 'dist')}`])
-    const policy = ctx.sandboxPolicy.resolve()
+    const policyService = ctx.sandboxPolicy as WriteProtectPolicyService
+    await policyService.materialize(workspace)
+    const policy = policyService.resolve()
     expect(policy.readOnlyPaths).toEqual([join(workspace, 'gitdir'), join(workspace, 'dist')])
   })
 })
@@ -138,7 +140,7 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
 describe('WriteProtectFileSystem 按模式判定 (不依赖展开清单)', () => {
   it('启动后才出现的深层保护路径同样被拒绝', async () => {
     await boot('workspace-write', ['gitdir'])
-    // 保护路径的枚举在 boot 时就完成了, 这里新建的目录从未进入过清单.
+    // write / edit 按模式判定, 这里新建的目录从未进入过枚举清单.
     mkdirSync(join(workspace, 'later', 'gitdir'), { recursive: true })
     await expect(fs.writeText(target(join(workspace, 'later', 'gitdir', 'config')), 'x')).rejects.toMatchObject({
       code: 'FS_SANDBOX_DENIED',

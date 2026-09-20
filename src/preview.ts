@@ -1,6 +1,7 @@
 /**
- * 把两份草稿文本展开为预览结果. 与 policy.resolve() 同一套解析器,
- * 工作区根由调用方给出 (设置页预览优先用当前会话 cwd).
+ * 把两份草稿文本展开为预览结果. 与 `materialize()` 同一套解析器,
+ * 工作区根由调用方给出 (设置页预览优先用当前会话 cwd). HTTP handler
+ * 可以 await, 异步遍历不会堵住 Host 事件循环.
  * @module dsh-write-protect/preview
  */
 
@@ -13,12 +14,12 @@ import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
  * @param writablePatterns - 字面路径的额外可写根文本.
  * @param workspaceRoot - 本次展开使用的工作区根.
  */
-export function previewPaths(
+export async function previewPaths(
   patterns: string,
   writablePatterns: string,
   workspaceRoot: string,
-): PathPreview {
-  const readOnly = expandReadOnlyPaths(patterns, workspaceRoot)
+): Promise<PathPreview> {
+  const readOnly = await expandReadOnlyPaths(patterns, workspaceRoot)
   const writable = expandWritablePaths(writablePatterns, workspaceRoot)
   return {
     workspaceRoot,

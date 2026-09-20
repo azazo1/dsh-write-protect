@@ -52,11 +52,18 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     const runner = result.argv[0]
     const separator = result.argv.indexOf('--')
     const profileArgs = separator === -1 ? result.argv.slice(1) : result.argv.slice(1, separator)
-    if (runner === 'sandbox-exec') return this.hardenSeatbelt(result, policy)
+    if (runner === 'sandbox-exec') {
+      if (policy.mode !== 'workspace-write') return this.hardenSeatbelt(result, policy)
+      const overlay = await this.overlayPaths(policy)
+      return this.hardenSeatbelt(result, {
+        ...policy,
+        readOnlyPaths: overlay.protectedPaths,
+        writablePaths: overlay.extra,
+      })
+    }
 
     if (policy.mode !== 'workspace-write') return result
-    const extra = policy.writablePaths ?? []
-    const protectedPaths = policy.readOnlyPaths ?? []
+    const { extra, protectedPaths } = await this.overlayPaths(policy)
     if (extra.length === 0 && protectedPaths.length === 0) return result
 
     if (runner === 'bwrap' || profileArgs.includes('--ro-bind')) {
@@ -73,6 +80,24 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     }
     this.warnUnsupported(runner)
     return result
+  }
+
+  /**
+   * 进程沙箱需要枚举路径. 生产路径上 policy 带 `readOnlyPatterns`, 走
+   * `materialize()` 等完整异步展开; 单测直接塞 `readOnlyPaths` 时沿用那份清单.
+   */
+  private async overlayPaths(policy: SandboxPolicy): Promise<{ extra: readonly string[], protectedPaths: readonly string[] }> {
+    const service = this.ctx.sandboxPolicy as {
+      materialize?: (workspaceRoot: string) => Promise<{ readOnly: readonly string[], writable: readonly string[] }>
+    } | undefined
+    if (typeof policy.readOnlyPatterns === 'string' && typeof service?.materialize === 'function') {
+      const snap = await service.materialize(policy.workspaceRoot)
+      return { extra: snap.writable, protectedPaths: snap.readOnly }
+    }
+    return {
+      extra: policy.writablePaths ?? [],
+      protectedPaths: policy.readOnlyPaths ?? [],
+    }
   }
 
   /**
