@@ -4,7 +4,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import { HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../src/constants.ts'
+import { HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
 
 /** schemastery schema 的可调用形态 (校验/套用默认值). */
@@ -89,5 +89,40 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     // 文本换成 /secrets 后 .git 不再受保护 (锚定字面条目即使不存在也保留).
     expect(resolved.readOnlyPaths).toEqual(['/ws/secrets'])
     expect(resolved.hardenBroker).toBe(false)
+  })
+
+  it('规则文件名与两个上限都走同一套 base 与用户覆盖', async () => {
+    const { policy, settings } = await setup()
+    expect(settings.base()[READONLY_FILE_FIELD]).toBe('.readonly')
+    expect(settings.base()[MAX_READONLY_ENTRIES_FIELD]).toBe(200)
+    expect(settings.base()[MAX_GRANTS_FIELD]).toBe(8)
+    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8 })
+    settings.save({
+      [READONLY_FILE_FIELD]: 'rules.txt',
+      [MAX_READONLY_ENTRIES_FIELD]: 5,
+      [MAX_GRANTS_FIELD]: 2,
+    })
+    expect(policy.limits()).toEqual({ readonlyFileName: 'rules.txt', maxReadOnlyEntries: 5, maxGrants: 2 })
+  })
+
+  it('规则文件名置空即关闭识别, 非法名字回退默认', async () => {
+    const { policy, settings } = await setup()
+    settings.save({ [READONLY_FILE_FIELD]: '   ' })
+    expect(policy.currentReadonlyFileName()).toBe('')
+    expect(policy.rulesFilePath('/ws')).toBeUndefined()
+    settings.save({ [READONLY_FILE_FIELD]: '../escape' })
+    expect(policy.currentReadonlyFileName()).toBe('.readonly')
+    expect(policy.rulesFilePath('/ws')).toBe('/ws/.readonly')
+  })
+
+  it('部署 base 的非法上限回退默认值', async () => {
+    const { policy } = await setup({ maxGrants: 0, maxReadOnlyEntries: -3 })
+    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8 })
+  })
+
+  it('规则文件条目并入生效保护路径, 并能被同文件里的取反剔除', async () => {
+    // 干净的工作区里没有 .readonly: 保护路径只来自设置页文本.
+    const { policy } = await setup({ readOnlyPaths: ['secrets/', '!/secrets/public.pem'] })
+    expect(policy.resolve({}).readOnlyPaths).toEqual([])
   })
 })

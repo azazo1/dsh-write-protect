@@ -9,14 +9,23 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
+import { HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, READONLY_FILE_FIELD, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
 import { WriteProtectPreviewPanel } from './preview-panel.ts'
 
 /** 组件对 settings scope 的最小结构视图 (避免耦合具体包的类型导出). */
 export interface WriteProtectScope {
   subscribe(listener: () => void): () => void
-  getSnapshot(): { value?: { patterns?: string, writablePatterns?: string, hardenBroker?: boolean } }
-  set(field: string, value: string | boolean): unknown
+  getSnapshot(): {
+    value?: {
+      patterns?: string
+      writablePatterns?: string
+      hardenBroker?: boolean
+      readonlyFileName?: string
+      maxReadOnlyEntries?: number
+      maxGrants?: number
+    }
+  }
+  set(field: string, value: string | boolean | number): unknown
 }
 
 /** 客户端注入的 React runtime 形状 (module loader 的预载模块). */
@@ -58,6 +67,11 @@ const CSS_TEXT = `
 .dsh-wp-preview-label { margin: 8px 0 4px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); }
 .dsh-wp-toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dsw-alias-label-primary); cursor: pointer; }
 .dsh-wp-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--dsw-alias-brand-primary); cursor: pointer; }
+.dsh-wp-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.dsh-wp-row-label { font-size: 12.5px; color: var(--dsw-alias-label-tertiary); }
+.dsh-wp-input { min-width: 160px; height: 30px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+.dsh-wp-input-sm { min-width: 72px; width: 72px; }
+.dsh-wp-input:focus-visible { outline: none; border-color: var(--dsw-alias-brand-primary); }
 `
 
 /** 注入页面样式 (data-plugin-css 标记防止重复插入). */
@@ -68,6 +82,12 @@ function installStyles(): void {
   tag.dataset.pluginCss = STYLE_ID
   tag.textContent = CSS_TEXT
   document.head.appendChild(tag)
+}
+
+/** 正整数输入的解析: 非法值回退到 Host 侧当前值 (Host 侧还会再校验一次). */
+function parsePositive(draft: string, fallback: number): number {
+  const parsed = Number.parseInt(draft.trim(), 10)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
 /** 配置页组件: 订阅 scope 展示当前生效文本, 保存写回 Host. */
@@ -89,10 +109,25 @@ export function WriteProtectSection(
     listener => scope.subscribe(listener),
     () => scope.getSnapshot().value?.hardenBroker ?? true,
   )
+  const savedFileName = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.readonlyFileName ?? '',
+  )
+  const savedMaxEntries = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.maxReadOnlyEntries ?? 200,
+  )
+  const savedMaxGrants = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.maxGrants ?? 8,
+  )
   // null 表示没有本地编辑: 输入框展示 Host 侧的当前值.
   const [patternsDraft, setPatternsDraft] = useState<string | null>(null)
   const [writableDraft, setWritableDraft] = useState<string | null>(null)
   const [hardenDraft, setHardenDraft] = useState<boolean | null>(null)
+  const [fileNameDraft, setFileNameDraft] = useState<string | null>(null)
+  const [maxEntriesDraft, setMaxEntriesDraft] = useState<string | null>(null)
+  const [maxGrantsDraft, setMaxGrantsDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [view, setView] = useState<'edit' | 'preview'>('edit')
   const [previewing, setPreviewing] = useState(false)
@@ -101,9 +136,15 @@ export function WriteProtectSection(
   const patternsValue = patternsDraft ?? savedPatterns
   const writableValue = writableDraft ?? savedWritable
   const hardenValue = hardenDraft ?? savedHarden
+  const fileNameValue = fileNameDraft ?? savedFileName
+  const maxEntriesValue = maxEntriesDraft ?? String(savedMaxEntries)
+  const maxGrantsValue = maxGrantsDraft ?? String(savedMaxGrants)
   const dirty = (patternsDraft !== null && patternsDraft !== savedPatterns)
     || (writableDraft !== null && writableDraft !== savedWritable)
     || (hardenDraft !== null && hardenDraft !== savedHarden)
+    || (fileNameDraft !== null && fileNameDraft !== savedFileName)
+    || (maxEntriesDraft !== null && maxEntriesDraft !== String(savedMaxEntries))
+    || (maxGrantsDraft !== null && maxGrantsDraft !== String(savedMaxGrants))
 
   const onPreview = (): void => {
     setPreviewing(true)
@@ -140,6 +181,22 @@ export function WriteProtectSection(
         readOnly: payload.readOnly.filter(item => typeof item === 'string'),
         writable: payload.writable.filter(item => typeof item === 'string'),
         warnings: payload.warnings.filter(item => typeof item === 'string'),
+        ...payload.readOnlyFile === undefined ? {} : {
+          readOnlyFile: {
+            ...typeof payload.readOnlyFile.path === 'string' ? { path: payload.readOnlyFile.path } : {},
+            patterns: typeof payload.readOnlyFile.patterns === 'string' ? payload.readOnlyFile.patterns : '',
+            warnings: Array.isArray(payload.readOnlyFile.warnings)
+              ? payload.readOnlyFile.warnings.filter(item => typeof item === 'string')
+              : [],
+          },
+        },
+        ...Array.isArray(payload.grants) ? {
+          grants: payload.grants.filter(
+            (item): item is { path: string, kind: 'extra-root' | 'override' } =>
+              typeof item === 'object' && item !== null && typeof (item as { path?: unknown }).path === 'string'
+              && ((item as { kind?: unknown }).kind === 'extra-root' || (item as { kind?: unknown }).kind === 'override'),
+          ),
+        } : {},
       })
       setView('preview')
     }).catch((error: unknown) => {
@@ -156,11 +213,17 @@ export function WriteProtectSection(
     if (patternsDraft !== null) writes.push(Promise.resolve(scope.set(PATTERNS_FIELD, patternsDraft)))
     if (writableDraft !== null) writes.push(Promise.resolve(scope.set(WRITABLE_FIELD, writableDraft)))
     if (hardenDraft !== null) writes.push(Promise.resolve(scope.set(HARDEN_BROKER_FIELD, hardenDraft)))
+    if (fileNameDraft !== null) writes.push(Promise.resolve(scope.set(READONLY_FILE_FIELD, fileNameDraft)))
+    if (maxEntriesDraft !== null) writes.push(Promise.resolve(scope.set(MAX_READONLY_ENTRIES_FIELD, parsePositive(maxEntriesDraft, savedMaxEntries))))
+    if (maxGrantsDraft !== null) writes.push(Promise.resolve(scope.set(MAX_GRANTS_FIELD, parsePositive(maxGrantsDraft, savedMaxGrants))))
     void Promise.all(writes).then(() => {
       setSaving(false)
       setPatternsDraft(null)
       setWritableDraft(null)
       setHardenDraft(null)
+      setFileNameDraft(null)
+      setMaxEntriesDraft(null)
+      setMaxGrantsDraft(null)
     })
   }
 
@@ -250,6 +313,52 @@ export function WriteProtectSection(
         ', 只收紧不放宽; 常规命令 (node, git, pnpm 等) 不受影响. 关闭后按官方 profile 运行, 只在确需从沙箱内驱动宿主 GUI 时才关. 仅 macOS 生效.',
       ),
     ),
+    createElement(
+      'div',
+      { className: 'dsh-wp-card' },
+      createElement('h3', { className: 'dsh-wp-card-title' }, '工作区只读规则文件'),
+      createElement(
+        'div',
+        { className: 'dsh-wp-row' },
+        createElement('span', { className: 'dsh-wp-row-label' }, '文件名'),
+        createElement('input', {
+          className: 'dsh-wp-input',
+          spellCheck: false,
+          value: fileNameValue,
+          placeholder: '.readonly',
+          onChange: (event: { currentTarget: { value: string } }) => setFileNameDraft(event.currentTarget.value),
+        }),
+      ),
+      createElement(
+        'div',
+        { className: 'dsh-wp-row' },
+        createElement('span', { className: 'dsh-wp-row-label' }, '最多条目数'),
+        createElement('input', {
+          className: 'dsh-wp-input dsh-wp-input-sm',
+          inputMode: 'numeric',
+          value: maxEntriesValue,
+          onChange: (event: { currentTarget: { value: string } }) => setMaxEntriesDraft(event.currentTarget.value),
+        }),
+        createElement('span', { className: 'dsh-wp-row-label' }, '单会话可写授权上限'),
+        createElement('input', {
+          className: 'dsh-wp-input dsh-wp-input-sm',
+          inputMode: 'numeric',
+          value: maxGrantsValue,
+          onChange: (event: { currentTarget: { value: string } }) => setMaxGrantsDraft(event.currentTarget.value),
+        }),
+      ),
+      createElement(
+        'p',
+        { className: 'dsh-wp-hint' },
+        '工作区根下这份文件与上面的保护路径同语义, 逐行追加在其后, 因此规则文件既能新增条目也能用 ',
+        createElement('code', null, '!'),
+        ' 放行上面的条目. 它只认普通文件 (符号链接被拒绝), ',
+        createElement('code', null, '//'),
+        ' 绝对条目与越出工作区的条目会被拒绝, 超过条目上限的部分丢弃并告警. 文件名留空即关闭该识别; 名字里不能有路径分隔符, 也不能用 ',
+        createElement('code', null, '.git'),
+        ' 一类元数据名. 这份文件本身永远不可写 (唯一的硬保护): 模型申请可写路径不会放开它, 任何授权都不放行它, 要改只能在这里换文件名或者由你在 DSH 之外编辑.',
+      ),
+    ),
   )
 
   const status = previewError !== ''
@@ -298,6 +407,9 @@ export function WriteProtectSection(
             setPatternsDraft(null)
             setWritableDraft(null)
             setHardenDraft(null)
+            setFileNameDraft(null)
+            setMaxEntriesDraft(null)
+            setMaxGrantsDraft(null)
           },
         },
         '放弃更改',

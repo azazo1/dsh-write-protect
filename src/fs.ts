@@ -4,6 +4,11 @@
  * `workspace-write` 在官方 `writableRoots` 之外并入 `policy.writablePaths`;
  * `danger-full-access` 进程沙箱整体放开时, 用户声明的保护路径对 write/edit
  * 工具仍然拒绝写入.
+ *
+ * 判定用执行 policy 带来的展开清单 (`policy.readOnlyPaths`): 它是设置页文本与
+ * 工作区只读规则文件合并后的结果, 因此两者在这一侧地位相同. 本会话经审批得到的
+ * 保护旁路 (`policy.writableOverrides`) 在此之前短路放行; 工作区只读规则文件
+ * 自身则相反, 它自己就是规则来源, 任何授权都不放行.
  * @module dsh-write-protect/fs
  */
 
@@ -15,6 +20,7 @@ import { writableRoots } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import { isPathUnder } from './containment.ts'
+import { REQUEST_WRITABLE_PATH_TOOL } from './constants.ts'
 
 export const name = 'dsh-write-protect-fs'
 export class WriteProtectFileSystem extends SandboxedFileSystem {
@@ -78,16 +84,30 @@ export class WriteProtectFileSystem extends SandboxedFileSystem {
   }
 
   /**
-   * 目标落在保护路径之下时拒绝. 拒绝沿用官方围栏的 `FS_SANDBOX_DENIED` 码,
-   * 工具层的拒绝标记与升级引导保持一致, message 中说明是本插件实施的拒绝.
+   * 目标落在保护路径之下时拒绝. 规则文件本身先挡 (硬保护), 再看本会话的保护
+   * 旁路, 最后按展开出来的保护路径做前缀比较 —— 命中的可以是目标自身, 也可以是
+   * 它的某个祖先目录, 这正是"被保护的目录连同其后代一起挡"的语义.
+   *
+   * 拒绝沿用官方围栏的 `FS_SANDBOX_DENIED` 码, 工具层的拒绝标记与升级引导保持
+   * 一致, message 中说明是本插件实施的拒绝, 并指出可以申请本会话授权.
    */
   private async denyIfProtected(displayPath: string, targetKey: string, policy: SandboxExecutionPolicy): Promise<void> {
+    const rulesFile = policy.rulesFilePath
+    if (rulesFile !== undefined && await isPathUnder(targetKey, rulesFile)) {
+      throw new FsError(
+        `cannot write "${displayPath}": the workspace write-protect rules file is read-only by design; change the "readonlyFileName" setting or edit that file outside DSH`,
+        'FS_SANDBOX_DENIED',
+      )
+    }
+    for (const override of policy.writableOverrides ?? []) {
+      if (await isPathUnder(targetKey, override)) return
+    }
     const paths = policy.readOnlyPaths ?? []
     if (paths.length === 0) return
     for (const root of paths) {
       if (await isPathUnder(targetKey, root)) {
         throw new FsError(
-          `cannot write "${displayPath}": the path is write-protected by dsh-write-protect (beneath ${root})`,
+          `cannot write "${displayPath}": the path is write-protected by dsh-write-protect (beneath ${root}). Call ${REQUEST_WRITABLE_PATH_TOOL} to ask the user for a session grant for this path.`,
           'FS_SANDBOX_DENIED',
         )
       }

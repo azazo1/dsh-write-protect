@@ -12,6 +12,11 @@
  *   - Landlock 是纯 allow-list 并集, 无法表达子路径例外, 但可以加 `--rw`
  *     放宽额外可写根; 保护路径仍告警一次, 命令按官方 profile 运行.
  * Windows 不挂载本行 (保留官方 ACL provider), fs 围栏半区覆盖 write/edit 工具.
+ *
+ * 保护路径清单来自 policy: 它是设置页文本与工作区只读规则文件合并后展开的结果,
+ * 因此规则文件里的条目在命令侧同样成挂载 / profile 约束. 本会话经审批得到的保护
+ * 旁路不参与叠加: 挂载与 profile 在命令启动前就定好, 运行期撤不掉, 收窄只会让
+ * bash 侧的保护凭空消失, 因此旁路只作用于 write / edit 那一侧.
  * @module dsh-write-protect/provider
  */
 

@@ -419,7 +419,8 @@ function lastMatchKeeps(
 /**
  * 把配置文本针对一次调用的工作区根展开为 canonical 保护路径, 语义对齐
  * gitignore(5): 锚定字面条目不存在也保留; 其余条目只收集展开时刻已存在的
- * 路径 (之后新建的路径要等下次展开才纳入). 已经会被保护的目录不往里走.
+ * 路径 (之后新建的路径要等下次展开才纳入). 已经会被保护的目录不往里走;
+ * 命中工作区根本身的条目 (如 `.`, 裸 `**`) 会把根自己作为围栏起点列出来.
  * @param text - gitignore 语义的配置文本.
  * @param workspaceRoot - 本次调用的工作区根.
  * @returns canonical 保护路径 (去重) 与告警列表.
@@ -459,6 +460,14 @@ export function expandReadOnlyPaths(text: string, workspaceRoot: string): Expand
       compiledEntries,
       workspaceRoot,
     ))
+  }
+
+  // 工作区根本身单独看一次: 上面枚举的是"条目命中的候选", 而 `.` 与 `**` 这类
+  // 条目命中的正是根本身 (其段序列为空, 只有 `**` 能匹配), 这里把它显式并进来,
+  // 让"整个工作区被保护"在枚举清单上也有对应的围栏起点.
+  const canonicalRoot = canonicalPath(workspaceRoot)
+  if (lastMatchKeeps({ path: canonicalRoot, isDir: true }, compiledEntries, workspaceRoot)) {
+    candidates.push({ path: canonicalRoot, isDir: true })
   }
 
   const paths: string[] = []

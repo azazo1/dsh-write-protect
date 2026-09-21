@@ -23,10 +23,15 @@ let ctx: Context
 let fs: WriteProtectFileSystem
 let fiber: Awaited<ReturnType<Context['plugin']>>
 
-async function boot(mode: SandboxMode, readOnlyPaths: string[], writablePaths: string[] = []): Promise<void> {
+async function boot(
+  mode: SandboxMode,
+  readOnlyPaths: string[],
+  writablePaths: string[] = [],
+  readonlyFileName = '.readonly',
+): Promise<void> {
   ctx = new Context()
   await ctx.plugin(SessionProjectionRegistry)
-  await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths, writablePaths })
+  await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths, writablePaths, readonlyFileName })
   fiber = await ctx.plugin(WriteProtectFileSystem, { cwd: workspace })
   fs = ctx.fs as WriteProtectFileSystem
 }
@@ -187,5 +192,70 @@ describe('WriteProtectFileSystem 额外可写根', () => {
     await boot('workspace-write', [], ['../extra', 'src'])
     const policy = ctx.sandboxPolicy.resolve()
     expect(policy.writablePaths).toEqual([realpathSync(extra)])
+  })
+})
+
+describe('WriteProtectFileSystem 与只读规则文件', () => {
+  it('规则文件里的条目在 write/edit 侧同样拒绝写入', async () => {
+    mkdirSync(join(workspace, 'vendor'))
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    await boot('workspace-write', [])
+    await expect(fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    // 其余位置照常可写.
+    await fs.writeText(target(join(workspace, 'ok.txt')), 'ok')
+    expect(await readFile(join(workspace, 'ok.txt'), 'utf8')).toBe('ok')
+  })
+
+  it('规则文件本身永远不可写 (唯一不接受放行的路径)', async () => {
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    await boot('workspace-write', [])
+    const error = await fs.writeText(target(join(workspace, '.readonly')), 'x').then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    expect((error as NodeJS.ErrnoException).code).toBe('FS_SANDBOX_DENIED')
+    expect((error as Error).message).toContain('read-only by design')
+  })
+
+  it('规则文件关闭识别 (文件名为空) 后可以正常写入', async () => {
+    await boot('workspace-write', [], [], '')
+    await fs.writeText(target(join(workspace, '.readonly')), 'vendor\n')
+    expect(await readFile(join(workspace, '.readonly'), 'utf8')).toBe('vendor\n')
+  })
+
+  it('设置页的保护路径被本会话旁路放行, 但规则文件自身仍被挡住', async () => {
+    mkdirSync(join(workspace, 'gitdir'))
+    await boot('workspace-write', ['gitdir'])
+    const policy = ctx.sandboxPolicy.resolve()
+    const granted = { ...policy, writableOverrides: [join(workspace, 'gitdir')] }
+    await fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x', undefined, undefined, granted)
+    expect(await readFile(join(workspace, 'gitdir', 'config'), 'utf8')).toBe('x')
+    // 旁路不能放开规则文件: 它是规则来源.
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    const rules = ctx.sandboxPolicy.resolve().rulesFilePath
+    expect(rules).toBe(join(workspace, '.readonly'))
+    await expect(
+      fs.writeText(target(join(workspace, '.readonly')), 'x', undefined, undefined, { ...granted, writableOverrides: [workspace] }),
+    ).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+  })
+
+  it('规则文件条目换成新内容后, 下一次写入按新内容判定', async () => {
+    mkdirSync(join(workspace, 'vendor'))
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    await boot('workspace-write', [])
+    await expect(fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    // 规则文件内容变了: 缓存过期后 (1s TTL) 重新读到的条目生效.
+    writeFileSync(join(workspace, '.readonly'), 'other\n')
+    mkdirSync(join(workspace, 'other'))
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    await expect(fs.writeText(target(join(workspace, 'other', 'a.txt')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    await fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')
+    expect(await readFile(join(workspace, 'vendor', 'lib.js'), 'utf8')).toBe('x')
   })
 })

@@ -22,8 +22,12 @@ export declare class WriteProtectFileSystem extends SandboxedFileSystem {
    */
   private gateMutation;
   /**
-   * 目标落在保护路径之下时拒绝. 拒绝沿用官方围栏的 `FS_SANDBOX_DENIED` 码,
-   * 工具层的拒绝标记与升级引导保持一致, message 中说明是本插件实施的拒绝.
+   * 目标落在保护路径之下时拒绝. 规则文件本身先挡 (硬保护), 再看本会话的保护
+   * 旁路, 最后按展开出来的保护路径做前缀比较 —— 命中的可以是目标自身, 也可以是
+   * 它的某个祖先目录, 这正是"被保护的目录连同其后代一起挡"的语义.
+   *
+   * 拒绝沿用官方围栏的 `FS_SANDBOX_DENIED` 码, 工具层的拒绝标记与升级引导保持
+   * 一致, message 中说明是本插件实施的拒绝, 并指出可以申请本会话授权.
    */
   private denyIfProtected;
 }

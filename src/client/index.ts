@@ -1,9 +1,11 @@
 /**
  * Client 半区入口: 在 Web Settings 注册独立的 "写入保护" 配置页. 通过
  * `settingsScope` 绑定 Host 的 {@link PLUGIN_ID} namespace (patterns,
- * writablePatterns 与 hardenBroker 字段), 页面保存的值经 Host settings 持久化
- * 并实时生效; base 层是 patch 配置的 `readOnlyPaths` / `writablePaths` /
- * `hardenBroker`, 用户未保存过时页面展示 base.
+ * writablePatterns, hardenBroker, readonlyFileName, maxReadOnlyEntries 与
+ * maxGrants 字段), 页面保存的值经 Host settings 持久化并实时生效; base 层是
+ * patch 配置的 `readOnlyPaths` / `writablePaths` / `hardenBroker` /
+ * `readonlyFileName` / `maxReadOnlyEntries` / `maxGrants`, 用户未保存过时页面
+ * 展示 base.
  *
  * 构建产物是 CJS 形态的 loader 模块: tsdown 以 banner/footer 包裹为
  * `window.__ModuleLoader__.load({ id, factory: (require) => ... })`,
@@ -13,7 +15,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { HARDEN_BROKER_FIELD, PATTERNS_FIELD, PLUGIN_ID, WRITABLE_FIELD } from '../constants.ts'
+import { HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../constants.ts'
 import { mountWriteProtectSection, type WriteProtectScope } from './section.ts'
 import { sessionCwdOf, type SessionsLike } from './session-cwd.ts'
 
@@ -27,6 +29,9 @@ export interface WriteProtectSettings {
   patterns?: string
   writablePatterns?: string
   hardenBroker?: boolean
+  readonlyFileName?: string
+  maxReadOnlyEntries?: number
+  maxGrants?: number
 }
 
 /** 未知 section 结构到类型化配置的解码; 异常结构回退 undefined (走 base 展示). */
@@ -36,11 +41,18 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   const patterns = record[PATTERNS_FIELD]
   const writable = record[WRITABLE_FIELD]
   const hardenBroker = record[HARDEN_BROKER_FIELD]
+  const readonlyFileName = record[READONLY_FILE_FIELD]
+  const maxReadOnlyEntries = record[MAX_READONLY_ENTRIES_FIELD]
+  const maxGrants = record[MAX_GRANTS_FIELD]
   const decoded: WriteProtectSettings = {}
   if (typeof patterns === 'string') decoded.patterns = patterns
   if (typeof writable === 'string') decoded.writablePatterns = writable
   if (typeof hardenBroker === 'boolean') decoded.hardenBroker = hardenBroker
+  if (typeof readonlyFileName === 'string') decoded.readonlyFileName = readonlyFileName
+  if (typeof maxReadOnlyEntries === 'number') decoded.maxReadOnlyEntries = maxReadOnlyEntries
+  if (typeof maxGrants === 'number') decoded.maxGrants = maxGrants
   const empty = decoded.patterns === undefined && decoded.writablePatterns === undefined && decoded.hardenBroker === undefined
+    && decoded.readonlyFileName === undefined && decoded.maxReadOnlyEntries === undefined && decoded.maxGrants === undefined
   return empty ? undefined : decoded
 }
 
