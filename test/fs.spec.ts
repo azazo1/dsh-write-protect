@@ -85,14 +85,23 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
     })
   })
 
-  it('danger-full-access 下普通文件可写, 保护路径仍被拒绝', async () => {
+  it('danger-full-access 下普通文件与保护路径都放行 (该模式不设限)', async () => {
     await boot('danger-full-access', ['gitdir'])
     mkdirSync(join(workspace, 'gitdir'))
     await fs.writeText(target(join(workspace, 'free.txt')), 'ok')
-    await expect(fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x')).rejects.toMatchObject({
-      code: 'FS_SANDBOX_DENIED',
-    })
+    await fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x')
     expect(await readFile(join(workspace, 'free.txt'), 'utf8')).toBe('ok')
+    expect(await readFile(join(workspace, 'gitdir', 'config'), 'utf8')).toBe('x')
+  })
+
+  it('danger-full-access 下规则文件与规则文件自身的硬保护都不介入', async () => {
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    mkdirSync(join(workspace, 'vendor'))
+    await boot('danger-full-access', [])
+    await fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')
+    await fs.writeText(target(join(workspace, '.readonly')), 'vendor\n')
+    expect(await readFile(join(workspace, 'vendor', 'lib.js'), 'utf8')).toBe('x')
+    expect(await readFile(join(workspace, '.readonly'), 'utf8')).toBe('vendor\n')
   })
 
   it('read-only 模式由官方围栏全量拒绝, message 不来自本插件', async () => {

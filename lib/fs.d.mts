@@ -16,9 +16,11 @@ export declare class WriteProtectFileSystem extends SandboxedFileSystem {
   }, signal?: AbortSignal, sandboxPolicy?: SandboxExecutionPolicy): Promise<FsEditOutcome>;
   /**
    * 按官方模式语义围栏, 再拒绝保护路径. `read-only` 全拒; `workspace-write`
-   * 要求目标落在 `writableRoots ∪ writablePaths` 之下; `danger-full-access`
-   * 跳过 allow-list, 仍检查保护路径. 返回给底层写入的目标在 workspace-write
-   * 下是重新 canonical 化的 fresh target, 与官方 checkedTarget 一致.
+   * 要求目标落在 `writableRoots ∪ writablePaths` 之下, 并检查保护路径;
+   * `danger-full-access` 完全放行 (既跳过 allow-list, 也不应用保护路径与规则
+   * 文件判定) —— 该模式是用户显式选择的"不设限", 沙箱本来就不介入. 返回给底层
+   * 写入的目标在 workspace-write 下是重新 canonical 化的 fresh target, 与官方
+   * checkedTarget 一致.
    */
   private gateMutation;
   /**

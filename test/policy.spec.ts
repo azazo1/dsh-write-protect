@@ -153,6 +153,8 @@ describe('WriteProtectPolicyService 的提示词', () => {
     expect(text).toContain('request_writable_path')
     expect(text).toContain('will keep writing the same protected path or area')
     expect(text).toContain('a single file is written with the ordinary write/edit tools')
+    // 保护只在 read-only 与 workspace-write 下成立, 提示词要点明这个边界.
+    expect(text).toContain('danger-full-access is unrestricted')
   })
 
   it('关掉可写申请后提示词只说本部署不授予', async () => {

@@ -238,7 +238,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           const patterns = this.currentReadOnlyText(policy.workspaceRoot).trim()
           const parts: string[] = []
           if (patterns.length > 0) {
-            parts.push(`Write-protected patterns (gitignore semantics; all DSH-enforced operations deny writes beneath matching paths; reads stay allowed): ${JSON.stringify(patterns)}.`)
+            parts.push(`Write-protected patterns (gitignore semantics; in read-only and workspace-write mode every DSH-enforced operation denies writes beneath matching paths, reads stay allowed; danger-full-access is unrestricted): ${JSON.stringify(patterns)}.`)
           }
           const source = this.currentReadonlyFileName()
           if (source.length > 0) {
