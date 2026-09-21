@@ -1,261 +1,37 @@
 /**
- * 保护路径配置解析, 完全对齐 gitignore(5) 的模式语义: 多行文本, 每行一条,
- * `#` 注释, 空行忽略, `\` 转义 (`\#`, `\!`, 尾部空格用 `\ ` 保留), 尾部 `/`
- * 只匹配目录, 含开头或中间分隔符的条目锚定到工作区根 (每个会话各自解析),
- * 其余条目在任意层级匹配. 通配: `*` 与 `?` 不跨 `/`, `[...]` 字符类 (含
- * `[:alpha:]` 等 POSIX 类), `**` 仅在独立成段时递归 (开头 = 任意层级, 中间 =
- * 零或多层目录); 段内连续星号按普通 `*` 处理. `!` 取反按 gitignore 的
- * last-match-wins 顺序解释, 但前缀围栏模型与 gitignore 的目录剪枝一致:
- * 无法在仍受保护的目录内部重新放行后代; 展开时也不再走进这些目录.
+ * 保护路径的**枚举展开**: 把 `gitignore.ts` 解析出的模式针对某个工作区根枚举成
+ * 具体存在的路径, 供进程沙箱 (bwrap `--ro-bind` / Seatbelt `subpath`) 与 fs 围栏
+ * 的前缀比较使用 —— 它们都得拿到真实路径.
+ *
+ * gitignore(5) 的模式语义与逐路径匹配都在 `gitignore.ts` (纯逻辑, 零运行时依赖),
+ * 本模块只负责把模式落到磁盘上: 多行文本, `#` 注释, 空行忽略, `\` 转义, 尾部 `/`
+ * 只匹配目录, 锚定判定, `!` 取反的 last-match-wins 顺序, 以及前缀围栏模型
+ * (无法在仍受保护的目录内部重新放行后代) 全部沿用那份实现.
  *
  * 展开语义: 锚定字面条目是单一显式路径, 不存在也保留 (fs 围栏与 Seatbelt
  * 对不存在路径同样有效); 其余条目枚举展开时刻已存在的路径 (新建路径要等
  * 下次重新展开才纳入). 执法扩展: `//` 前缀表示文件系统绝对路径
- * (gitignore 没有这个形态, 部署配置需要); 以 `/**` 结尾的条目按前缀围栏
+ * (gitignore 没有这种形态, 部署配置需要); 以 `/**` 结尾的条目按前缀围栏
  * 等价性保护其命名目录本身, 而不是枚举全部后代. 展开遍历用 lstat, 不走进
  * 目录符号链接, 避免链到工作区外的大树 (如 `Applications -> /Applications`).
  * @module dsh-write-protect/patterns
  */
 
 import { lstatSync, readdirSync } from 'node:fs'
-import { isAbsolute, parse as parsePath, relative, resolve as resolvePath, sep, type PlatformPath } from 'node:path'
+import { isAbsolute, parse as parsePath, resolve as resolvePath, sep, type PlatformPath } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
+import { compileEntry, isLiteralSegment, lastMatchKeeps, parsePatternLines, stripTrailingSpaces, toPosix } from './gitignore.ts'
+import type { Candidate, CompiledEntry } from './gitignore.ts'
 import { escapesWithBackslash, expandTildeAndEnv, pathApiOf, type PathExpandOptions } from './path-expand.ts'
 
-/** 一条解析后的配置行. */
-export interface PatternEntry {
-  /** `!` 前缀的取反条目: last-match-wins 顺序下剔除匹配的展开结果. */
-  readonly negated: boolean
-  /** 尾部 `/`: 只匹配目录. */
-  readonly dirOnly: boolean
-  /** 含开头或中间分隔符: 锚定到工作区根, 不做任意层级匹配. */
-  readonly anchored: boolean
-  /** `//` 前缀: 文件系统绝对路径 (本插件的执法扩展). */
-  readonly fsAbsolute: boolean
-  /** 以 `/` 分段后的原始模式段 (未去转义, `**` 保留为独立段). */
-  readonly segments: readonly string[]
-  /** 解析后的条目原文 (去除 `!` 前缀与目录标记), 用于告警定位. */
-  readonly source: string
-}
-
-/** 候选保护路径: `isDir` 为 null 表示路径尚不存在 (无法判定目录性). */
-interface Candidate {
-  readonly path: string
-  readonly isDir: boolean | null
-}
+// 解析与匹配的公共契约仍从本模块转出: 既有消费方按 './patterns.ts' 引用它们.
+export { compileGitignore, formatPatternEntry, parsePatternLines, stripTrailingSpaces, toPosix } from './gitignore.ts'
+export type { Candidate, CompiledEntry, PatternEntry, PatternSet } from './gitignore.ts'
 
 /** 展开结果: canonical 保护路径与展开过程中的告警. */
 export interface ExpandResult {
   readonly paths: readonly string[]
   readonly warnings: readonly string[]
-}
-
-/** 解析前的行预处理: 移除未转义的尾部空格 (gitignore 只忽略尾部空格). */
-function stripTrailingSpaces(line: string): string {
-  let end = line.length
-  while (end > 0 && line[end - 1] === ' ' && !isEscapedAt(line, end - 1)) end -= 1
-  return line.slice(0, end)
-}
-
-/** 位置 index 的字符是否被奇数个连续 `\` 转义. */
-function isEscapedAt(line: string, index: number): boolean {
-  let slashes = 0
-  for (let i = index - 1; i >= 0 && line[i] === '\\'; i -= 1) slashes += 1
-  return slashes % 2 === 1
-}
-
-/** 按未转义的 `/` 分段, 转义序列原样保留在段内. */
-function splitUnescaped(line: string): string[] {
-  const segments: string[] = []
-  let current = ''
-  let i = 0
-  while (i < line.length) {
-    const ch = line[i]!
-    if (ch === '\\' && i + 1 < line.length) {
-      current += ch + line[i + 1]!
-      i += 2
-      continue
-    }
-    if (ch === '/') {
-      segments.push(current)
-      current = ''
-      i += 1
-      continue
-    }
-    current += ch
-    i += 1
-  }
-  segments.push(current)
-  return segments
-}
-
-/**
- * 解析配置文本为条目列表: 跳过空行与 `#` 注释, 处理 `!` 前缀, 尾部 `/` 与
- * `//` 绝对扩展; 前导与中间的 `/` 使条目锚定到工作区根.
- */
-export function parsePatternLines(text: string): PatternEntry[] {
-  const entries: PatternEntry[] = []
-  for (const rawLine of text.split(/\r?\n/)) {
-    let line = stripTrailingSpaces(rawLine)
-    if (line.length === 0 || line.startsWith('#')) continue
-    const negated = line.startsWith('!')
-    if (negated) line = line.slice(1)
-    let dirOnly = false
-    while (line.length > 0 && line.endsWith('/') && !isEscapedAt(line, line.length - 1)) {
-      line = line.slice(0, -1)
-      dirOnly = true
-    }
-    let fsAbsolute = false
-    let anchored = false
-    if (line.startsWith('//')) {
-      fsAbsolute = true
-      anchored = true
-      line = line.slice(2)
-    } else if (line.startsWith('/')) {
-      anchored = true
-      line = line.slice(1)
-    }
-    const rawSegments = splitUnescaped(line)
-    if (!anchored && rawSegments.length > 1) anchored = true
-    const segments = rawSegments.filter(segment => segment.length > 0)
-    if (segments.length === 0) continue
-    entries.push({ negated, dirOnly, anchored, fsAbsolute, segments, source: line })
-  }
-  return entries
-}
-
-/** 段是否为字面段 (不含 glob 元字符与转义), 可直接按文本拼接. */
-function isLiteralSegment(segment: string): boolean {
-  return !/[*?[\]\\]/.test(segment)
-}
-
-function escapeRegExpChar(ch: string): string {
-  return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-const POSIX_CLASSES: Record<string, string> = {
-  alpha: 'A-Za-z',
-  alnum: '0-9A-Za-z',
-  digit: '0-9',
-  xdigit: '0-9A-Fa-f',
-  lower: 'a-z',
-  upper: 'A-Z',
-  space: '\\t\\n\\v\\f\\r ',
-  blank: ' \\t',
-  cntrl: '\\u0000-\\u001f\\u007f',
-  punct: '!-/:-@\\[-`{-~',
-  print: '\\x20-\\x7e',
-  graph: '\\x21-\\x7e',
-}
-
-function escapeClassChar(ch: string): string {
-  return /[\\\]^[]/.test(ch) ? `\\${ch}` : ch
-}
-
-/** 把 `[...]` 类编译为正则类片段; 未闭合时返回 undefined (按字面 `[` 处理). */
-function parseCharClass(pattern: string, start: number): { source: string, next: number } | undefined {
-  let i = start + 1
-  let negated = false
-  if (pattern[i] === '!' || pattern[i] === '^') {
-    negated = true
-    i += 1
-  }
-  let body = ''
-  let first = true
-  while (i < pattern.length) {
-    const ch = pattern[i]!
-    if (ch === ']' && !first) return { source: charClassSource(body, negated), next: i + 1 }
-    first = false
-    if (ch === '[' && pattern[i + 1] === ':') {
-      const end = pattern.indexOf(':]', i + 2)
-      if (end !== -1) {
-        body += pattern.slice(i, end + 2)
-        i = end + 2
-        continue
-      }
-    }
-    body += ch
-    i += 1
-  }
-  return undefined
-}
-
-/** 类体到正则片段: `/` 永不匹配 (FNM_PATHNAME), POSIX 类展开为显式范围. */
-function charClassSource(body: string, negated: boolean): string {
-  let inner = ''
-  let i = 0
-  while (i < body.length) {
-    if (body.startsWith('[:', i)) {
-      const end = body.indexOf(':]', i + 2)
-      const name = end === -1 ? undefined : body.slice(i + 2, end)
-      const range = name === undefined ? undefined : POSIX_CLASSES[name]
-      if (range !== undefined) {
-        inner += range
-        i = end! + 2
-        continue
-      }
-    }
-    inner += escapeClassChar(body[i]!)
-    i += 1
-  }
-  return `[${negated ? '^/' : ''}${inner}]`
-}
-
-/**
- * 把一个模式段编译为对单段路径名的全匹配正则 (段内不含真正的 `/`).
- * `\x` 转义为字面 x; `*` 为 `[^/]*`, `?` 为 `[^/]`, `[...]` 为字符类.
- */
-function segmentToRegExp(pattern: string, caseSensitive: boolean): RegExp {
-  let source = ''
-  let i = 0
-  while (i < pattern.length) {
-    const ch = pattern[i]!
-    if (ch === '\\' && i + 1 < pattern.length) {
-      source += escapeRegExpChar(pattern[i + 1]!)
-      i += 2
-      continue
-    }
-    if (ch === '*') {
-      source += '[^/]*'
-      i += 1
-      continue
-    }
-    if (ch === '?') {
-      source += '[^/]'
-      i += 1
-      continue
-    }
-    if (ch === '[') {
-      const cls = parseCharClass(pattern, i)
-      if (cls !== undefined) {
-        source += cls.source
-        i = cls.next
-        continue
-      }
-      source += '\\['
-      i += 1
-      continue
-    }
-    source += escapeRegExpChar(ch)
-    i += 1
-  }
-  return new RegExp(`^${source}$`, caseSensitive ? '' : 'i')
-}
-
-const GLOB_MATCH_CASE_SENSITIVE = process.platform !== 'win32'
-
-/** 一条编译后的条目: effective 已为非锚定条目补上虚拟 `**` 前缀. */
-interface CompiledEntry {
-  readonly entry: PatternEntry
-  readonly effective: readonly string[]
-  /** 与 effective 对齐的段匹配器, null 表示 `**` 段. */
-  readonly matchers: readonly (RegExp | null)[]
-}
-
-function compileEntry(entry: PatternEntry): CompiledEntry {
-  const effective = entry.anchored || entry.fsAbsolute ? entry.segments : ['**', ...entry.segments]
-  const matchers = effective.map(segment => segment === '**' ? null : segmentToRegExp(segment, GLOB_MATCH_CASE_SENSITIVE))
-  return { entry, effective, matchers }
 }
 
 /**
@@ -349,71 +125,8 @@ function collectGlobMatches(
   return matches
 }
 
-function toPosix(path: string): string {
-  return process.platform === 'win32' ? path.replaceAll('\\', '/') : path
-}
-
 function splitPosix(path: string): string[] {
   return path.split('/').filter(segment => segment.length > 0)
-}
-
-/** 单条目对候选路径的匹配: 目录标记, 锚定形态与 `**` 递归全部生效. */
-function entryMatches(compiled: CompiledEntry, candidate: Candidate, workspaceRoot: string): boolean {
-  if (compiled.entry.dirOnly && candidate.isDir === false) return false
-  let segments: readonly string[]
-  if (compiled.entry.fsAbsolute) {
-    segments = splitPosix(toPosix(candidate.path))
-  } else {
-    const rel = relative(workspaceRoot, candidate.path)
-    if (rel.startsWith('..')) {
-      // 工作区外的候选只可能来自绝对条目, 相对锚定条目不再匹配.
-      if (compiled.entry.anchored && !compiled.entry.fsAbsolute) return false
-      segments = splitPosix(toPosix(candidate.path))
-    } else {
-      // 候选即工作区根本身时为空段序列, 让 `**` 类条目得以命中.
-      segments = rel === '' ? [] : splitPosix(toPosix(rel))
-    }
-  }
-  return matchSegments(compiled.effective, compiled.matchers, segments)
-}
-
-/** 段序列匹配: `**` 匹配零或多层, 其余段逐段全匹配 (带记忆化避免指数回溯). */
-function matchSegments(
-  effective: readonly string[],
-  matchers: readonly (RegExp | null)[],
-  segments: readonly string[],
-): boolean {
-  const failed = new Set<string>()
-  const walk = (pi: number, si: number): boolean => {
-    if (pi >= effective.length) return si === segments.length
-    const key = `${pi}:${si}`
-    if (failed.has(key)) return false
-    const matcher = matchers[pi]!
-    let ok: boolean
-    if (matcher === null) {
-      ok = walk(pi + 1, si) || (si < segments.length && walk(pi, si + 1))
-    } else if (si >= segments.length) {
-      ok = false
-    } else {
-      ok = matcher.test(segments[si]!) && walk(pi + 1, si + 1)
-    }
-    if (!ok) failed.add(key)
-    return ok
-  }
-  return walk(0, 0)
-}
-
-/** last-match-wins: 候选路径由顺序上最后命中的条目裁决去留. */
-function lastMatchKeeps(
-  candidate: Candidate,
-  compiledEntries: readonly CompiledEntry[],
-  workspaceRoot: string,
-): boolean {
-  let keeps = false
-  for (const compiled of compiledEntries) {
-    if (entryMatches(compiled, candidate, workspaceRoot)) keeps = !compiled.entry.negated
-  }
-  return keeps
 }
 
 /**
@@ -428,7 +141,7 @@ function lastMatchKeeps(
 export function expandReadOnlyPaths(text: string, workspaceRoot: string): ExpandResult {
   const warnings: string[] = []
   const entries = parsePatternLines(text)
-  const compiledEntries = entries.map(compileEntry)
+  const compiledEntries = entries.map(entry => compileEntry(entry))
   const candidates: Candidate[] = []
 
   for (let index = 0; index < entries.length; index += 1) {
