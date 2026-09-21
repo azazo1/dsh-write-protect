@@ -22,7 +22,7 @@
 
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
-import { formatPatternEntry, parsePatternLines } from './gitignore.ts'
+import { parsePatternLines, type PatternEntry } from './gitignore.ts'
 /** 规则文件缓存的有效时长: 同步读取放在判定路径上, 不能每次都碰磁盘. */
 const FILE_TTL_MS = 1000
 
@@ -139,7 +139,7 @@ function parseReadOnlyFile(
       truncated += 1
       continue
     }
-    entries.push(formatPatternEntry(parsed))
+    entries.push(formatEntry(parsed))
   }
   if (truncated > 0) {
     warnings.push(`read-only rules file "${target}": ${String(truncated)} entries beyond the limit of ${String(maxEntries)} were ignored`)
@@ -153,6 +153,17 @@ function parseReadOnlyFile(
  */
 function escapesWorkspace(segments: readonly string[]): boolean {
   return segments.some(segment => segment === '..')
+}
+
+/**
+ * 把一条已解析的规则文件条目还原为配置行原文: `//` 绝对条目在解析阶段就被拒,
+ * 因此这里只需处理 `!` 前缀, 锚定 `/` 与尾部 `/`. 还原出来的文本交给
+ * `parsePatternLines` 会得到同一条条目, 因此逐条校验 / 过滤 / 拼接可以放心往返.
+ * 锚定条目统一写成前导 `/` 形态 —— 对含中间 `/` 的条目而言这与原文等价但更明确.
+ */
+function formatEntry(entry: PatternEntry): string {
+  const prefix = entry.negated ? '!' : ''
+  return `${prefix}${entry.anchored ? '/' : ''}${entry.segments.join('/')}${entry.dirOnly ? '/' : ''}`
 }
 
 /** 缓存里一个工作区的规则文件结果 (文件名是 key 的一部分). */

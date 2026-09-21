@@ -1,7 +1,7 @@
 /**
  * gitignore(5) 语义的模式解析与匹配 —— **纯逻辑**: 只做字符串与正则运算, 不碰
- * 文件系统, 不依赖任何 `@deepseek-ai/*` 包, 因此可以被只读规则文件解析, 可写
- * 申请的保护判定与设置页预览各自独立引用.
+ * 文件系统, 不依赖任何 `@deepseek-ai/*` 包, 因此可以被 fs 围栏、枚举展开与测试
+ * 各自独立引用.
  *
  * 语义: 多行文本, 每行一条, `#` 注释, 空行忽略, `\` 转义 (`\#`, `\!`, 尾部空格
  * 用 `\ ` 保留), 尾部 `/` 只匹配目录, 含开头或中间分隔符的条目锚定到工作区根
@@ -10,13 +10,14 @@
  * 任意层级, 中间 = 零或多层目录); 段内连续星号按普通 `*` 处理. `!` 取反按
  * gitignore 的 last-match-wins 顺序解释.
  *
- * 前缀围栏模型: 一条条目命中某个**目录**时, 该目录及其全部后代都受保护, 且不能
- * 在仍受保护的目录内部用 `!` 重新放行后代; 被 `!` 放行的目录则是重新敞开的,
- * 其内部的匹配照常生效 —— {@link PatternSet.match} 从目标路径逐级向上找"最近的、
- * 顺序上最后命中且未取反"的祖先, 命中的那个就是围栏起点.
+ * 前缀围栏模型 (与 gitignore 的目录剪枝一致, 也是本插件执法语义的核心):
+ * 一条条目命中某个**目录**时, 该目录及其全部后代都受保护, 且不能在仍受保护的
+ * 目录内部用 `!` 重新放行后代; 被 `!` 放行的目录则是重新敞开的, 其内部的匹配
+ * 照常生效 —— {@link PatternSet.match} 从目标路径逐级向上找"最近的、顺序上最后
+ * 命中且未取反"的祖先, 命中的那个就是围栏起点.
  *
- * 执法扩展: `//` 前缀表示文件系统绝对路径 (gitignore 没有这个形态). 相对条目只
- * 作用于工作区**内**, 工作区外只有 `//` 绝对条目有效.
+ * 执法扩展: `//` 前缀表示文件系统绝对路径 (gitignore 没有这个形态, 部署配置
+ * 需要). 相对条目只作用于工作区**内**, 工作区外只有 `//` 绝对条目有效.
  * @module dsh-write-protect/gitignore
  */
 
@@ -121,19 +122,6 @@ export function parsePatternLines(text: string): PatternEntry[] {
 /** 段是否为字面段 (不含 glob 元字符与转义), 可直接按文本拼接. */
 export function isLiteralSegment(segment: string): boolean {
   return !/[*?[\]\\]/.test(segment)
-}
-
-/**
- * 把一个已解析的条目还原为配置行原文 (含 `!` 前缀, 锚定 `/`, 尾部 `/` 与
- * `//` 绝对前缀). {@link parsePatternLines} 会把它解析回同一条条目, 因此解析
- * 之外还需要按文本处理时 (逐条校验 / 过滤 / 拼接) 可以放心往返. 锚定条目统一
- * 写成前导 `/` 形态 —— 对含中间 `/` 的条目而言这与原文等价, 但更明确.
- * @param entry - 已解析的条目.
- */
-export function formatPatternEntry(entry: PatternEntry): string {
-  const prefix = entry.negated ? '!' : ''
-  const absolute = entry.fsAbsolute ? '//' : entry.anchored ? '/' : ''
-  return `${prefix}${absolute}${entry.segments.join('/')}${entry.dirOnly ? '/' : ''}`
 }
 
 function escapeRegExpChar(ch: string): string {
@@ -252,7 +240,7 @@ function segmentToRegExp(pattern: string, caseSensitive: boolean): RegExp {
 /** 平台默认的大小写敏感: Windows 上文件名不区分大小写 (git 亦如此). */
 export const DEFAULT_CASE_SENSITIVE = process.platform !== 'win32'
 
-/** 一条编译后的条目: `effective` 已为非锚定条目补上虚拟 `**` 前缀. */
+/** 一条编译后的条目: effective 已为非锚定条目补上虚拟 `**` 前缀. */
 export interface CompiledEntry {
   readonly entry: PatternEntry
   readonly effective: readonly string[]
@@ -306,7 +294,7 @@ function matchSegments(
   const failed = new Set<string>()
   const walk = (pi: number, si: number): boolean => {
     if (pi >= effective.length) return si === segments.length
-    const key = `${String(pi)}:${String(si)}`
+    const key = `${pi}:${si}`
     if (failed.has(key)) return false
     const matcher = matchers[pi]!
     let ok: boolean
@@ -325,6 +313,8 @@ function matchSegments(
 
 /**
  * 顺序上最后命中的条目 (last-match-wins 的原始裁决), 没有命中时为 undefined.
+ * 枚举展开用它做目录剪枝与结果裁决, {@link PatternSet.match} 用它判断某个祖先
+ * 目录是被保护还是被 `!` 放行.
  */
 export function lastMatchingEntry(
   candidate: Candidate,
@@ -367,8 +357,7 @@ export interface PatternSet {
    * null (仅目标自身用得上; 祖先目录恒为目录), 此时带尾部 `/` 的条目也按命中处理
    * —— 宁可多挡也不漏挡.
    *
-   * 不依赖任何预先生成的路径清单, 因此对"枚举不到 / 尚未存在 / 新建"的路径同样
-   * 有效: 可写申请的保护判定与只读规则文件的解析都建立在它之上.
+   * 不依赖任何预先生成的路径清单, 因此对"枚举不到/尚未存在/新建"的路径同样有效.
    */
   match(path: string, workspaceRoot: string, isDir: boolean | null): PatternMatch | undefined
 }

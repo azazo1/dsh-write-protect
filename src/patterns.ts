@@ -25,7 +25,7 @@ import type { Candidate, CompiledEntry } from './gitignore.ts'
 import { escapesWithBackslash, expandTildeAndEnv, pathApiOf, type PathExpandOptions } from './path-expand.ts'
 
 // 解析与匹配的公共契约仍从本模块转出: 既有消费方按 './patterns.ts' 引用它们.
-export { compileGitignore, formatPatternEntry, parsePatternLines, stripTrailingSpaces, toPosix } from './gitignore.ts'
+export { compileGitignore, parsePatternLines, stripTrailingSpaces, toPosix } from './gitignore.ts'
 export type { Candidate, CompiledEntry, PatternEntry, PatternSet } from './gitignore.ts'
 
 /** 展开结果: canonical 保护路径与展开过程中的告警. */
