@@ -158,6 +158,31 @@ describe('handleRequest 的直通路径', () => {
     expect(result.kind).toBe('override')
   })
 
+  it('批过父目录后, 子目录与子文件不再需要申请也不弹窗', async () => {
+    mkdirSync(join(workspace, 'secrets', 'deep'), { recursive: true })
+    await boot(['secrets/'])
+    const parent = join(workspace, 'secrets')
+    const first = await handleRequest(ctx, grants, host, parent, '要往这个目录写一批文件', exec('call-1'))
+    expect(first.kind).toBe('override')
+    expect(approval.requests).toHaveLength(1)
+    // 工作着工作着想写子目录: 已在授权覆盖范围内, 直接回"本来就可写".
+    const child = await handleRequest(ctx, grants, host, join(workspace, 'secrets', 'deep'), '再往子目录写', exec('call-2'))
+    expect(child.kind).toBe('already-writable')
+    expect(child.notes.join(' ')).toContain('one grant covers everything under it')
+    expect(approval.requests).toHaveLength(1)
+    expect(grants.recordOf(SESSION_ID).grants).toHaveLength(1)
+  })
+
+  it('批过工作区外的父目录后, 其子目录同样不再需要申请', async () => {
+    mkdirSync(join(outside, 'build', 'assets'), { recursive: true })
+    await boot([])
+    const first = await handleRequest(ctx, grants, host, outside, '构建产物要写在这里', exec('call-1'))
+    expect(first.kind).toBe('extra-root')
+    const child = await handleRequest(ctx, grants, host, join(outside, 'build'), '写构建子目录', exec('call-2'))
+    expect(child.kind).toBe('already-writable')
+    expect(approval.requests).toHaveLength(1)
+  })
+
   it('整段保护 (规则文件里一行 **) 时子目录仍可逐个申请', async () => {
     // `.` 在 gitignore 语义下不匹配任何东西 (git check-ignore 同样如此), 整段
     // 保护要写 `**` 或 `/**`.

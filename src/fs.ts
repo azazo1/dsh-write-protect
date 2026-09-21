@@ -106,7 +106,7 @@ export class WriteProtectFileSystem extends SandboxedFileSystem {
     for (const root of paths) {
       if (await isPathUnder(targetKey, root)) {
         throw new FsError(
-          `cannot write "${displayPath}": the path is write-protected by dsh-write-protect (beneath ${root}). Call ${REQUEST_WRITABLE_PATH_TOOL} to ask the user for a session grant for this path.`,
+          `cannot write "${displayPath}": the path is write-protected by dsh-write-protect (beneath ${root}). Call ${REQUEST_WRITABLE_PATH_TOOL} once for that directory to ask the user for a session grant; one grant covers everything under it.`,
           'FS_SANDBOX_DENIED',
         )
       }

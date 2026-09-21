@@ -276,6 +276,19 @@ async function requestAccess(
   // 直通之前 —— 工作区本身就在 allow-list 里, 先看 allow-list 会把受保护的内部
   // 路径当成"本来就可写".
   if (await isPathUnder(target, workspaceRoot)) {
+    // 先前批准过的授权 (含工作区外的额外根与工作区内的保护旁路) 已经覆盖目标时
+    // 直接放行: 授权是路径级的, 父目录批过一次, 下面的每个子路径都不必再申请.
+    for (const root of [...(policy.writablePaths ?? []), ...(policy.writableOverrides ?? [])]) {
+      if (await isPathUnder(target, root)) {
+        return {
+          path: target,
+          granted: true,
+          kind: 'already-writable',
+          scope: 'session',
+          notes: [`already covered by the session grant on "${root}"; one grant covers everything under it, so do not ask again for this path.`],
+        }
+      }
+    }
     const hit = await protectedBy(target, host.currentProtectedPaths(sessionId))
     if (hit === undefined) {
       return {
@@ -298,7 +311,7 @@ async function requestAccess(
         granted: true,
         kind: 'already-writable',
         scope: 'session',
-        notes: [`already inside the writable root "${root}"; no grant was needed.`],
+        notes: [`already inside the writable root "${root}"; one grant covers everything under it, so do not ask again for this path.`],
       }
     }
   }
@@ -360,10 +373,12 @@ async function askApproval(
   const notes = kind === 'override'
     ? [
       `write protection on "${matchedPattern ?? ''}" is bypassed for the write/edit tools under "${target}".`,
+      'the grant already covers every path beneath it, so do not ask again for a subdirectory or another file in there while it lasts.',
       'sandboxed commands still see the read-only mount or Seatbelt rule on that path; they cannot be widened while the grant is only an in-session decision.',
     ]
     : [
       `"${target}" joined the writable roots for this session, so sandboxed commands and the write/edit tools may write there.`,
+      'the grant already covers every path beneath it, so do not ask again for a subdirectory or another file in there while it lasts.',
       'write-protect patterns still win inside it.',
     ]
   if (policy.mode === 'read-only') {
