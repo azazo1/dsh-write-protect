@@ -1,16 +1,17 @@
 /**
  * 替换 base 的 `sandbox` 行 (Linux/macOS): 官方 `LocalSandboxProvider` 的
  * runner 链, 功能探测与执法报告全部原样保留, 只在 confine() 返回之后把
- * 额外可写根与保护路径叠加为对 profile 的额外约束 —
- *   - bwrap: 在 `--` 分隔符之前先插入 `--bind <p> <p>`, 再插入
- *     `--ro-bind <p> <p>`; 后挂载覆盖早挂载, 只读 bind 叠在可写 bind 之上;
- *   - Seatbelt (sandbox-exec): 先追加 `(allow file-write* (subpath "..."))`,
- *     再追加 `(deny file-write* (subpath "..."))`, 显式 deny 收窄更早的 allow;
- *     不区分模式地追加 broker 逃逸拒绝形式 (见 seatbelt.ts), 否则官方 profile 的
- *     `(allow default)` 会让沙箱内一条 `open x.app` 把命令交给 launchd 在沙箱外跑 —
- *     该加固由 policy 的 `hardenBroker` 控制, 设置页可关;
- *   - Landlock 是纯 allow-list 并集, 无法表达子路径例外, 但可以加 `--rw`
- *     放宽额外可写根; 保护路径仍告警一次, 命令按官方 profile 运行.
+ * 额外可写根, 保护路径与本会话授权叠加为对 profile 的额外约束 —
+ *   - bwrap: 在 `--` 分隔符之前先插入额外可写根的 `--bind <p> <p>`, 再插入
+ *     保护路径的 `--ro-bind <p> <p>`, 最后插入本会话授权的 `--bind`; 后挂载
+ *     覆盖早挂载, 因此授权能把被保护的子树重新翻回可写;
+ *   - Seatbelt (sandbox-exec): 先追加额外可写 allow, 再追加保护路径 deny, 最后
+ *     追加授权 allow —— SBPL 按最后匹配生效, 授权 allow 必须排在 deny 之后才不
+ *     会被它盖掉; 不区分模式地追加 broker 逃逸拒绝形式 (见 seatbelt.ts), 否则
+ *     官方 profile 的 `(allow default)` 会让沙箱内一条 `open x.app` 把命令交给
+ *     launchd 在沙箱外跑 —— 该加固由 policy 的 `hardenBroker` 控制, 设置页可关;
+ *   - Landlock 是纯 allow-list 并集, 无法表达"父目录只读, 其中一棵子树可写":
+ *     额外可写根可以加 `--rw`, 保护路径与本会话授权都告警一次.
  * Windows 不挂载本行 (保留官方 ACL provider), fs 围栏半区覆盖 write/edit 工具.
  * @module dsh-write-protect/provider
  */
@@ -32,11 +33,18 @@ function isFilesystemRoot(path: string): boolean {
 
 export class WriteProtectSandboxProvider extends LocalSandboxProvider {
   private warnedUnsupported = false
+  private warnedLandlockOverride = false
 
   /**
-   * 按官方结果包装 argv 后叠加额外可写根, 保护路径与 broker 逃逸加固.
+   * 按官方结果包装 argv 后叠加额外可写根, 保护路径, 本会话授权与 broker 逃逸加固.
    * Seatbelt 在两种模式下都要加固: `read-only` 的官方 profile 同样是
    * `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍不打穿它.
+   *
+   * 叠加顺序是有意的 (两条链路都按"后匹配 / 后挂载生效"):
+   *   1. 额外可写根 (设置页声明的与经审批的工作区外路径);
+   *   2. 保护路径 (ro-bind / deny);
+   *   3. 本会话的保护旁路 (`writableOverrides`) —— 它要在保护路径之后才能把被
+   *      授权的子树从只读里翻回来, 否则命令侧就永远看不到本会话的授权.
    */
   override confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
     const result = super.confine(argv, policy)
@@ -49,18 +57,21 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     if (policy.mode !== 'workspace-write') return result
     const extra = policy.writablePaths ?? []
     const protectedPaths = policy.readOnlyPaths ?? []
-    if (extra.length === 0 && protectedPaths.length === 0) return result
+    const overrides = policy.writableOverrides ?? []
+    if (extra.length === 0 && protectedPaths.length === 0 && overrides.length === 0) return result
 
     if (runner === 'bwrap' || profileArgs.includes('--ro-bind')) {
       let next = result
       if (extra.length > 0) next = this.withBwrapBinds(next, extra)
       if (protectedPaths.length > 0) next = this.withBwrapReadonly(next, protectedPaths)
+      if (overrides.length > 0) next = this.withBwrapOverrideBinds(next, overrides)
       return next
     }
     if (profileArgs.includes('--rw')) {
       let next = result
       if (extra.length > 0) next = this.withLandlockWritable(next, extra)
       if (protectedPaths.length > 0) this.warnUnsupported(runner)
+      if (overrides.length > 0) this.warnLandlockOverride()
       return next
     }
     this.warnUnsupported(runner)
@@ -68,8 +79,9 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
   }
 
   /**
-   * Seatbelt: 追加额外可写 allow (仅 `workspace-write`), 保护路径 deny, 最后是
-   * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`.
+   * Seatbelt: 追加额外可写 allow, 保护路径 deny, 本会话旁路的 allow, 最后是
+   * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`;
+   * 旁路的 allow 又必须排在保护 deny 之后, 否则那条 deny 会盖掉它.
    * `hardenBroker` 被显式关掉时只跳过 broker 拒绝形式, 命令按官方 profile 运行.
    */
   private hardenSeatbelt(result: ConfinedArgv, policy: SandboxPolicy): ConfinedArgv {
@@ -77,8 +89,10 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     if (policy.mode === 'workspace-write') {
       const extra = policy.writablePaths ?? []
       const protectedPaths = policy.readOnlyPaths ?? []
+      const overrides = policy.writableOverrides ?? []
       if (extra.length > 0) next = this.withSeatbeltAllows(next, extra)
       if (protectedPaths.length > 0) next = this.withSeatbeltDenials(next, protectedPaths)
+      if (overrides.length > 0) next = this.withSeatbeltAllows(next, overrides)
     }
     if (policy.hardenBroker === false) return next
     return this.appendSeatbelt(next, SEATBELT_BROKER_DENIALS)
@@ -111,6 +125,26 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
       }
     }
     if (missing.length > 0) this.warnMissingWritable(missing)
+    return this.insertBeforeSeparator(result, binds)
+  }
+
+  /**
+   * bwrap: 在 `--` 分隔符之前插入本会话保护旁路的可写 bind 对. 它必须排在保护
+   * 路径的 ro-bind **之后**, 否则那些 ro-bind 会把授权子树又压回只读. 宿主上
+   * 尚不存在的路径 bwrap 无法挂载, 跳过并告警 (目录建出来后下一次命令即生效).
+   */
+  private withBwrapOverrideBinds(result: ConfinedArgv, paths: readonly string[]): ConfinedArgv {
+    const binds: string[] = []
+    const missing: string[] = []
+    for (const path of paths) {
+      if (isFilesystemRoot(path)) continue
+      if (existsSync(path)) {
+        binds.push('--bind', path, path)
+      } else {
+        missing.push(path)
+      }
+    }
+    if (missing.length > 0) this.warnMissingOverride(missing)
     return this.insertBeforeSeparator(result, binds)
   }
 
@@ -196,6 +230,22 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
   /** bwrap / Landlock 无法授权的缺失额外可写根: 告警, fs 围栏仍会按词法放行. */
   private warnMissingWritable(paths: readonly string[]): void {
     this.ctx.logger?.warn?.(`dsh-write-protect: sandbox runner cannot grant missing extra writable roots, skipped (write/edit tools still allow them): ${JSON.stringify(paths)}`)
+  }
+
+  /**
+   * Landlock 是纯 allow-list, 无法表达"父目录只读, 其中一棵子树可写": 把保护
+   * 旁路通过 `--rw` 加进去会连同上方被保护的父目录一起放开, 反而扩大权限, 因此
+   * 命令侧不叠加它, 只告警一次.
+   */
+  private warnLandlockOverride(): void {
+    if (this.warnedLandlockOverride) return
+    this.warnedLandlockOverride = true
+    this.ctx.logger?.warn?.('dsh-write-protect: Landlock cannot express a writable subtree inside a protected directory, so session grants apply to the write/edit tools only on this runner (bwrap and macOS Seatbelt honor them for commands too)')
+  }
+
+  /** bwrap 无法挂载的缺失保护旁路: 告警, write/edit 侧仍然按授权放行. */
+  private warnMissingOverride(paths: readonly string[]): void {
+    this.ctx.logger?.warn?.(`dsh-write-protect: bwrap cannot bind missing session grant paths, skipped (write/edit tools still allow them; the command side picks them up once they exist): ${JSON.stringify(paths)}`)
   }
 }
 

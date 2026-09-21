@@ -24,8 +24,13 @@ async function setup(config: Record<string, unknown> = {}, internals: Internals 
   return sandbox
 }
 
-function ww(workspaceRoot: string, readOnlyPaths: string[], writablePaths: string[] = []): SandboxPolicy {
-  return { mode: 'workspace-write', workspaceRoot, readOnlyPaths, writablePaths }
+function ww(
+  workspaceRoot: string,
+  readOnlyPaths: string[],
+  writablePaths: string[] = [],
+  writableOverrides: string[] = [],
+): SandboxPolicy {
+  return { mode: 'workspace-write', workspaceRoot, readOnlyPaths, writablePaths, writableOverrides }
 }
 
 const BWRAP_INTERNALS: Internals = { platform: 'linux', probeBwrap: () => true }
@@ -208,5 +213,53 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
     const argv = sandbox.confine(['true'], ww('/ws', [])).argv
     expect(argv[argv.indexOf('-p') + 1]).toContain('(deny appleevent-send)')
+  })
+
+  it('Seatbelt: 本会话旁路的 allow 排在保护 deny 之后', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = sandbox.confine(['true'], ww('/ws', ['/ws/granted'], [], ['/ws/granted/inner']))
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    const denyAt = profile.lastIndexOf('(deny file-write* (subpath "/ws/granted"))')
+    const allowAt = profile.lastIndexOf('(allow file-write* (subpath "/ws/granted/inner"))')
+    expect(denyAt).toBeGreaterThan(-1)
+    expect(allowAt).toBeGreaterThan(denyAt)
+    // broker 加固仍在最后: 它要盖过 `(allow default)`.
+    expect(profile.endsWith(BROKER_TAIL)).toBe(true)
+  })
+
+  it('bwrap: 本会话旁路的可写 bind 排在保护 ro-bind 之后', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const granted = join(realWs, 'granted')
+    const inner = join(granted, 'inner')
+    mkdirSync(inner, { recursive: true })
+    const result = sandbox.confine(['true'], ww(realWs, [granted], [], [inner]))
+    const separator = result.argv.indexOf('--')
+    const roBind = result.argv.lastIndexOf('--ro-bind')
+    const overrideBind = result.argv.indexOf(inner)
+    expect(roBind).toBeGreaterThan(-1)
+    expect(overrideBind).toBeGreaterThan(roBind)
+    expect(result.argv[overrideBind - 1]).toBe('--bind')
+    expect(result.argv.slice(separator + 1)).toEqual(['true'])
+  })
+
+  it('bwrap: 不存在的旁路路径跳过 (命令侧等它出现)', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const baseline = sandbox.confine(['true'], ww(realWs, []))
+    const result = sandbox.confine(['true'], ww(realWs, [], [], ['/definitely-missing-dsh-wp-grant']))
+    expect(result.argv).toEqual(baseline.argv)
+  })
+
+  it('Landlock: 旁路不叠加 (纯 allow-list 无法表达子路径例外)', async () => {
+    const sandbox = await setup({}, LANDLOCK_INTERNALS)
+    const baseline = sandbox.confine(['true'], ww(realWs, []))
+    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [], [join(realWs, 'gitdir')]))
+    expect(result.argv).toEqual(baseline.argv)
+  })
+
+  it('read-only 模式下旁路同样不叠加', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const baseline = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
+    const withOverride = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writableOverrides: ['/ws/gitdir'] })
+    expect(withOverride.argv).toEqual(baseline.argv)
   })
 })

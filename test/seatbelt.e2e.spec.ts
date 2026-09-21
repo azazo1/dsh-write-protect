@@ -138,6 +138,32 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)',
     expect(result.stderr.toLowerCase()).toContain('operation not permitted')
   })
 
+  it.skipIf(nestedSandbox)('本会话授权 (保护旁路) 让命令在被保护的父目录里写出子目录', async () => {
+    // 父目录整体只读 + 只授权其中一棵子树: 授权 allow 必须排在保护 deny 之后.
+    const granted = join(ws, 'granted')
+    const inner = join(granted, 'inner')
+    mkdirSync(inner, { recursive: true })
+    const argv = await confine(
+      { mode: 'workspace-write', workspaceRoot: ws, readOnlyPaths: [granted], writableOverrides: [inner] },
+      ['touch', join(inner, 'allowed.txt')],
+    )
+    expect(run(argv).status).toBe(0)
+    expect(existsSync(join(inner, 'allowed.txt'))).toBe(true)
+  })
+
+  it('授权之外的同级路径命令侧仍然只读', async () => {
+    const granted = join(ws, 'granted-sibling')
+    const inner = join(granted, 'inner')
+    mkdirSync(inner, { recursive: true })
+    const argv = await confine(
+      { mode: 'workspace-write', workspaceRoot: ws, readOnlyPaths: [granted], writableOverrides: [inner] },
+      ['touch', join(granted, 'denied.txt')],
+    )
+    const result = run(argv)
+    expect(result.status).not.toBe(0)
+    expect(result.stderr.toLowerCase()).toContain('operation not permitted')
+  })
+
   it.skipIf(nestedSandbox)('对照: 官方 profile 下经 open 启动的 app bundle 能写到 allow-list 之外', async () => {
     rmSync(escapeMarker, { force: true })
     run(await stockConfine({ mode: 'workspace-write', workspaceRoot: ws }, ['open', escapeApp]))
