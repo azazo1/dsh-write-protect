@@ -372,9 +372,8 @@ async function askApproval(
   if (!granted.ok) throw new Error(`write access to "${target}" could not be granted: ${granted.reason}`)
   const notes = kind === 'override'
     ? [
-      `write protection on "${matchedPattern ?? ''}" is bypassed for the write/edit tools under "${target}".`,
+      `write protection on "${matchedPattern ?? ''}" is bypassed for the write/edit tools and for sandboxed commands under "${target}".`,
       'the grant already covers every path beneath it, so do not ask again for a subdirectory or another file in there while it lasts.',
-      'sandboxed commands still see the read-only mount or Seatbelt rule on that path; they cannot be widened while the grant is only an in-session decision.',
     ]
     : [
       `"${target}" joined the writable roots for this session, so sandboxed commands and the write/edit tools may write there.`,

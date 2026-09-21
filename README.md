@@ -147,7 +147,7 @@ secrets/
 | write / edit 工具 | 全平台 | `workspace-write` 下保护路径拒绝, 额外根放行; `danger-full-access` 下全部放行 |
 | bash 等命令 | Linux, macOS | 内核级只读 / 额外可写; Windows 做不到, 见下方限制 |
 | 提示词 | 全平台 | 先告诉模型哪些不能写, 哪些额外根可写, 需要反复写时怎么申请 |
-| 本会话授权 (`request_writable_path`) | 全平台 | 工作区外路径按额外根生效; 保护旁路只影响 write / edit |
+| 本会话授权 (`request_writable_path`) | 全平台 | 工作区外路径按额外根生效; 保护旁路对 write / edit 与命令沙箱 (bwrap / Seatbelt) 都生效 |
 | macOS broker 加固 | macOS | 堵住 `open` 经 launchd 把命令挪到沙箱外执行 |
 
 主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式.
