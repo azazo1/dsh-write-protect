@@ -175,8 +175,9 @@ function renderResult(result: RequestResult): string {
 export function registerRequestWritablePath(ctx: Context, grants: GrantsService, host: GrantPolicyHost): void {
   ctx.tools.register(defineTool({
     name: REQUEST_WRITABLE_PATH_TOOL,
-    description: 'Ask the user to grant write access to one path for this session. Use it when a write was denied by write protection, '
-      + 'or when the task needs a path outside the session workspace. The user decides in an approval prompt, and a granted path stays '
+    description: 'Ask the user to grant write access to one path for this session, for work that will keep writing the same protected path '
+      + 'or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on). '
+      + 'A single file is written with the ordinary write/edit tools. The user decides in an approval prompt, and a granted path stays '
       + 'writable only until the session ends.',
     parameters: {
       path: {

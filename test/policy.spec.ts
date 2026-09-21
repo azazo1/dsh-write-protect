@@ -45,17 +45,29 @@ function fakeSettings(): FakeSettings {
   }
 }
 
-/** 挂载 policy 服务, 返回服务与 settings 替身 (替身可随后模拟用户保存). */
-async function setup(config: Partial<Config> = {}): Promise<{ policy: WriteProtectPolicyService, settings: FakeSettings }> {
+/** 挂载 policy 服务, 返回服务, settings 替身与最近一次提示词文本. */
+async function setup(config: Partial<Config> = {}): Promise<{
+  policy: WriteProtectPolicyService
+  settings: FakeSettings
+  promptText: () => string
+}> {
   const ctx = new Context()
   const settings = fakeSettings()
-  ctx.provide('sessionProjections', { register: () => {} })
+  // 投影替身要带 stateOf: 提示词组装会经 resolve() 读沙箱模式覆盖.
+  ctx.provide('sessionProjections', { register: () => {}, stateOf: () => undefined })
   ctx.provide('settings', settings.service)
+  let text = ''
+  ctx.provide('systemPrompt', {
+    context: (entry: { text: (context: unknown) => string }) => {
+      text = entry.text({ agent: { session: { id: 'session-1', header: { cwd: '/ws' } } } })
+    },
+    getContextOrder: () => 0,
+  })
   await ctx.plugin(WriteProtectPolicyService, { workspaceRoot: '/ws', mode: 'workspace-write', ...config })
   // settings 注入是异步 fiber: 让 inject 回调先跑完再断言.
   await new Promise(resolve => setTimeout(resolve, 0))
   const policy = (ctx as unknown as { sandboxPolicy: WriteProtectPolicyService }).sandboxPolicy
-  return { policy, settings }
+  return { policy, settings, promptText: () => text }
 }
 
 describe('WriteProtectPolicyService 的 settings 通道', () => {
@@ -131,5 +143,22 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     // 干净的工作区里没有 .readonly: 保护路径只来自设置页文本.
     const { policy } = await setup({ readOnlyPaths: ['secrets/', '!/secrets/public.pem'] })
     expect(policy.resolve({}).readOnlyPaths).toEqual([])
+  })
+})
+
+describe('WriteProtectPolicyService 的提示词', () => {
+  it('默认引导模型在需要反复写同一片区域时才申请', async () => {
+    const { promptText } = await setup()
+    const text = promptText()
+    expect(text).toContain('request_writable_path')
+    expect(text).toContain('will keep writing the same protected path or area')
+    expect(text).toContain('a single file is written with the ordinary write/edit tools')
+  })
+
+  it('关掉可写申请后提示词只说本部署不授予', async () => {
+    const { promptText } = await setup({ allowWritableRequests: false })
+    const text = promptText()
+    expect(text).toContain('do not ask for it')
+    expect(text).not.toContain('will keep writing the same protected path or area')
   })
 })

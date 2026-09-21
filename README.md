@@ -2,7 +2,7 @@
 
 给 DSH 沙箱补上工作区里某一段路径的只读保护, 典型用途是不让模型改 `.git`. 也可以在 `workspace-write` 下声明工作区外的额外可写根, 让 bash 与 write / edit 写到相邻目录, 而不必切到 `danger-full-access`.
 
-工作区根还可以放一份 gitignore 语义的只读规则文件 (默认 `.readonly`), 内容与设置页的保护路径同规则, 因此"这段目录只读, 但其中某个子目录要能写"这类约定可以直接写进仓库. 模型被挡住时也不用干等: 它可以调 `request_writable_path` 申请某个具体路径的可写授权 (工作区外的额外可写根, 或工作区内被保护路径的旁路), 由你在审批弹窗里逐次决定, 授权只在本会话内存里存在.
+工作区根还能放一份只读规则文件 (默认 `.readonly`), 与设置页的保护路径同语义; 任务要反复写同一片受保护区域时, 模型也可以申请本会话的可写授权 (见下文两节).
 
 write / edit 工具在所有平台都会挡住保护路径, 并放行额外可写根. bash 等命令在 Linux / macOS 上同样生效; Windows 上 bash / pwsh 既挡不住 `.git`, 也拿不到额外可写根. 读取不受影响.
 
@@ -30,7 +30,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 ## 配置
 
-保护路径的默认值统一定义在 `src/constants.ts` 的 `DEFAULT_READ_ONLY_PATHS`, 额外可写根默认空列表 (`DEFAULT_WRITABLE_PATHS`), macOS broker 加固默认开启 (`DEFAULT_HARDEN_BROKER`), 只读规则文件名默认 `.readonly` (`DEFAULT_READONLY_FILE_NAME`), 规则条目上限与会话授权上限默认 200 / 8 (`DEFAULT_MAX_READONLY_ENTRIES` / `DEFAULT_MAX_GRANTS`); patch 的 policy 行与设置页部署 base 都由它们兜底. 需要部署级覆盖时在 patch 行显式给出数组或开关:
+保护路径, 额外可写根, 规则文件名, 各项上限与两个开关的默认值都定义在 `src/constants.ts` 的 `DEFAULT_*`, patch 的 policy 行与设置页部署 base 都由它们兜底; 需要部署级覆盖时在 patch 行显式给出字段 (整行替换, `mode` / `workspaceRoot` 必须带上):
 
 ```yml
 - id: dsh-write-protect-policy
@@ -76,7 +76,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 - 关掉后命令按官方 profile 运行, 只影响 macOS, 只影响这一个加固; 保护路径与额外可写根照常.
 - 用户在设置页拨动开关后该值不再生效.
 
-`readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` 是只读规则文件与可写申请的部署 base, 都可在设置页改 (见 "只读规则文件" 与 "模型申请可写路径"); 用户保存过对应字段后该值不再生效.
+`readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` 同理, 是只读规则文件与可写申请的部署 base (见后两节), 用户保存过对应字段后该值不再生效.
 
 源码分三块, 边界是"有没有文件系统依赖":
 
@@ -92,7 +92,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 <img src="https://raw.githubusercontent.com/azazo1/dsh-write-protect/HEAD/docs/screenshots/settings-page.png" alt="写入保护设置页" width="520">
 
-Web Settings 侧边栏的 "写入保护" 页面有三块内容: 保护路径 (gitignore 语义), 额外可写根 (字面路径) 和 macOS broker 加固开关. 保存后实时生效并持久化:
+Web Settings 侧边栏的 "写入保护" 页面有五块内容: 保护路径 (gitignore 语义), 额外可写根 (字面路径), 只读规则文件名与两个上限, "模型申请可写路径" 开关, 以及 macOS broker 加固开关. 保存后实时生效并持久化:
 
 ```text
 # 保护路径
@@ -118,47 +118,25 @@ $HOME/scratch
 
 ## 只读规则文件
 
-工作区根可以放一份 gitignore 语义的规则文件, 内容与设置页的 "保护路径" 完全同规则, 逐行追加在设置页文本之后, 因此规则文件既能新增条目, 也能用 `!` 放行设置页里的条目. 默认文件名 `.readonly`, 可在设置页的 "工作区只读规则文件" 卡片里改, 置空即关闭这份来源:
+工作区根可以放一份与 "保护路径" 同语义的规则文件 (默认 `.readonly`, 可在设置页改名或置空关闭), 逐行追加在设置页文本之后:
 
 ```text
 # <工作区根>/.readonly
 secrets/
 /vendor
 !vendor/public/**
-```
-
-整段保护整个工作区写 `**` 或 `/**` (两者都把工作区根当成围栏起点, 根下一切都写不进), 典型用法是"整体只读 + 让模型逐个目录申请":
-
-```text
-# <工作区根>/.readonly
 **
 ```
 
-`/` 和 `.` 不是"当前目录"的意思, 它们匹配不到任何路径, 等于什么都不保护; 只保护根下第一层要写 `/*`.
-
-- 只认工作区根这一份, 不做逐目录嵌套. 每个会话按自己的工作区根各读一份.
-- 只接受普通文件: 符号链接一律拒绝 (否则规则来源可以被链到工作区外由他人改写).
-- `//` 绝对条目拒绝; 解析结果越出工作区的条目 (`..`) 拒绝; 两者都只告警不生效.
-- 条目数上限由 `maxReadOnlyEntries` 决定 (默认 200), 超出的条目丢弃并告警一次.
-- 生效方式与设置页文本一致: 保护路径与额外可写根都按它判定, 命令侧使用展开后的清单.
-- **这份文件本身是唯一的硬保护**: 它自己就是规则来源, 模型申请可写路径不受理它, 任何本会话授权也放行不了它. 要改内容只能改设置页的文件名, 或者由你在 DSH 之外编辑. 关闭识别 (文件名留空) 后它只是一份普通文件.
+- 只认工作区根这一份, 每个会话各读一份; 整段保护工作区写 `**` 或 `/**`, 根下第一层用 `/*`; `/` 与 `.` 匹配不到任何路径, 等于什么都不保护.
+- 只接受普通文件 (符号链接拒绝); `//` 绝对条目与越出工作区的 `..` 条目拒绝, 超限条目丢弃, 都只告警不生效.
+- **这份文件本身是唯一的硬保护**: 任何授权都不放行它, 要改只能换文件名或由你在 DSH 之外编辑.
 
 ## 模型申请可写路径
 
-提示词里会告诉模型: 写入被保护路径挡住, 或者任务需要工作区外的路径时, 可以调 `request_writable_path` 申请本会话的可写授权. 工具参数是 `path` (一条字面路径, 支持 `~` / `$VAR` / `//` / 相对路径含 `..`, 不要通配) 与 `justification` (给你看的一句话理由).
+提示词会引导模型: 任务要反复写同一片受保护区域时 (一个目录里的多个文件, 构建产物树, 若干次写入都依赖的工作区外路径), 调 `request_writable_path` 申请本会话的可写授权, 参数是 `path` (字面路径, 支持 `~` / `$VAR` / `//` / 相对含 `..`) 与 `justification` (给你看的一句话理由); 单个文件照旧用 write / edit 工具, 那次被拒就算了.
 
-审批弹窗里的理由会写明这次在放开什么:
-
-- 工作区外的路径: `grant write access to "<path>" (outside the session workspace) for this session: <理由>`; 批准后它成为本会话的额外可写根, bash 与 write / edit 都可以写.
-- 工作区内被保护路径: `grant write access to "<path>" for this session, overriding write protection on "<命中的围栏路径>": <理由>`; 批准后只对 write / edit 放行该路径, **命令侧不受影响** —— 命令的只读挂载与 Seatbelt 规则在命令启动前就定好了, 运行期收不回来, 因此这一档只收窄不看命令.
-
-其余约定:
-
-- 已经被允许的路径 (工作区内的未保护路径, 平台临时区, 设置页声明的额外根) 直接返回 "本来就可写", 不弹窗.
-- 拒绝 / 取消 / 组合里没有审批通道 / 会话审批策略为 `never` 时都直接失败, 并给出能区分开的说明, 模型不会把"用户拒绝"误当成"通道不可用".
-- 授权只在本会话内存里: 会话结束或进程重启即失效, 不写 settings, 不落盘. 单会话条数上限 `maxGrants` (默认 8), 超限的申请直接失败并提示.
-- 整个功能可以用 `allowWritableRequests` 关掉 (设置页的 "模型申请可写路径" 开关, 或 patch 字段): 关掉后工具的任何调用都被拒, 提示词也不再引导模型去申请, 被拒的写入只能照报错处理.
-- 用户拒绝是唯一防线: 设置页文本与规则文件里的条目都属于可申请范围, 因此"整体只读 + 逐项申请"这种用法是可行的 (`/**` 保护整个工作区, 再逐个子目录批准).
+审批理由会写明在放开什么: 工作区外的路径批准后成为本会话的额外可写根 (bash 与 write / edit 都能写), 工作区内被保护路径只对 write / edit 放行 (命令侧的只读挂载与 Seatbelt 规则在启动前就定好了, 运行期收不回来). 授权只在本会话内存里, 不写 settings, 条数上限 `maxGrants` (默认 8); 关掉 `allowWritableRequests` 后工具的任何调用都被拒, 提示词也不再引导. 保护路径与规则文件条目都在可申请范围内, 因此可以配成 "整个工作区只读 + 逐个目录批准".
 
 ## 保护范围
 

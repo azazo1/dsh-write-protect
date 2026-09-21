@@ -308,9 +308,9 @@ export function WriteProtectSection(
       createElement(
         'p',
         { className: 'dsh-wp-hint' },
-        '开启后提示词会引导模型在写入被挡住时调用 ',
+        '开启后提示词会引导模型在"任务要反复写同一片受保护区域"时调用 ',
         createElement('code', null, 'request_writable_path'),
-        ', 由你在审批弹窗里逐次决定; 关掉后该工具的任何调用都被拒绝, 提示词也不再引导, 模型只能照报错处理. 授权只在本会话内存里存在, 上限由上面的 "单会话可写授权上限" 决定.',
+        ', 由你在审批弹窗里逐次决定; 关掉后该工具的任何调用都被拒绝, 提示词也不再引导. 授权只在本会话内存里存在, 上限由上面的 "单会话可写授权上限" 决定.',
       ),
     ),
     createElement(

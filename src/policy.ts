@@ -253,9 +253,9 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
             parts.push(`Session write grants that bypass write protection for the write/edit tools (sandboxed commands still see the read-only mount): ${JSON.stringify(overrides)}.`)
           }
           if (this.currentLimits().allowWritableRequests) {
-            parts.push(`Extra write access is not granted by default: call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} with a path and a one-sentence justification when a write was denied by write protection or the task needs a path outside the workspace. The user decides in an approval prompt, and the grant lasts only for this session.`)
+            parts.push(`Extra write access is not granted by default. Call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} when the task will keep writing the same protected path or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on); a single file is written with the ordinary write/edit tools, and if that write is denied, leave it at that. The user decides in an approval prompt, and the grant lasts only for this session.`)
           } else {
-            parts.push('Extra write access is not granted by this deployment: do not ask for it, and treat denied writes as final.')
+            parts.push('Extra write access is not granted by this deployment: do not ask for it.')
           }
           return parts.join(' ')
         },
