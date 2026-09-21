@@ -72,6 +72,12 @@ export interface GrantPolicyHost {
   maxGrants(): number
   /** 当前工作区根的只读规则文件路径 (文件名关闭时为 undefined). */
   rulesFilePath(workspaceRoot: string): string | undefined
+  /**
+   * 本部署是否允许模型申请可写路径 (设置项 `allowWritableRequests`). 每次调用
+   * 时读取, 因此设置页关掉后立刻生效; 关掉时工具仍注册 (schema 稳定), 但任何
+   * 调用都会被拒.
+   */
+  allowRequests(): boolean
 }
 
 /**
@@ -226,6 +232,9 @@ export async function handleRequest(
   justification: string,
   exec: ToolRunContext,
 ): Promise<RequestResult> {
+  if (!host.allowRequests()) {
+    throw new Error('request_writable_path is disabled by this deployment (allowWritableRequests); treat denied writes as final')
+  }
   if (justification.trim().length === 0) throw new Error('justification must be a non-empty sentence')
   return await requestAccess(ctx, grants, host, rawPath, justification, exec)
 }

@@ -41,7 +41,12 @@ function sessionStub(): never {
   return { id: SESSION_ID, header: { cwd: workspace } } as never
 }
 
-async function boot(readOnlyPaths: string[], readonlyFileName = '.readonly', maxGrants = 8): Promise<void> {
+async function boot(
+  readOnlyPaths: string[],
+  readonlyFileName = '.readonly',
+  maxGrants = 8,
+  allowWritableRequests = true,
+): Promise<void> {
   ctx = new Context()
   approval = { outcome: 'allowed-once', policy: 'ask', requests: [] }
   const fakeApproval = {
@@ -62,6 +67,7 @@ async function boot(readOnlyPaths: string[], readonlyFileName = '.readonly', max
     readOnlyPaths,
     readonlyFileName,
     maxGrants,
+    allowWritableRequests,
   })
   policy = (ctx as unknown as { sandboxPolicy: WriteProtectPolicyService }).sandboxPolicy
   // 授权表用 policy 自己那一个: 生产路径上工具与 policy 共享同一份记录.
@@ -71,6 +77,7 @@ async function boot(readOnlyPaths: string[], readonlyFileName = '.readonly', max
     currentProtectedPaths: sessionId => policy.resolveForSession(sessionId ?? SESSION_ID).readOnlyPaths ?? [],
     maxGrants: () => maxGrants,
     rulesFilePath: workspaceRoot => policy.rulesFilePath(workspaceRoot),
+    allowRequests: () => allowWritableRequests,
   }
   // 让 policy 记住这个会话的工作区根 (真实路径上由 agent loop 的 resolve 完成).
   policy.resolve({ session: sessionStub() })
@@ -214,6 +221,12 @@ describe('handleRequest 的拒绝路径', () => {
     await boot([])
     approval.policy = 'never'
     await expect(handleRequest(ctx, grants, host, outside, '需要写', exec())).rejects.toThrow('approval prompts are disabled')
+    expect(approval.requests).toHaveLength(0)
+  })
+
+  it('allowWritableRequests 关掉时任何调用都被拒且不弹窗', async () => {
+    await boot([], '.readonly', 8, false)
+    await expect(handleRequest(ctx, grants, host, outside, '需要写', exec())).rejects.toThrow('disabled by this deployment')
     expect(approval.requests).toHaveLength(0)
   })
 

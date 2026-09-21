@@ -205,6 +205,12 @@ export interface Config {
    * 用户保存过 `maxGrants` 后该值不再生效.
    */
   maxGrants?: number;
+  /**
+   * 是否允许模型申请可写路径的部署 base, 缺省开启 (见
+   * `DEFAULT_ALLOW_REQUESTS`). 关掉后 `request_writable_path` 的任何调用都被
+   * 拒绝, 提示词也不再引导模型去申请; 用户保存过该字段后此值不再生效.
+   */
+  allowWritableRequests?: boolean;
 }
 /** 一次解析得到的完整生效文本与展开结果. */
 export interface PolicySnapshot {
@@ -220,6 +226,7 @@ interface ResolvedConfigValues {
   readonly readonlyFileName: string;
   readonly maxReadOnlyEntries: number;
   readonly maxGrants: number;
+  readonly allowWritableRequests: boolean;
 }
 export declare class WriteProtectPolicyService extends SandboxPolicyService {
   static Config: z<Schemastery.ObjectS<{
@@ -231,6 +238,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     readonlyFileName: z<string, string>;
     maxReadOnlyEntries: z<number, number>;
     maxGrants: z<number, number>;
+    allowWritableRequests: z<boolean, boolean>;
   }>, Schemastery.ObjectT<{
     mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access">;
     workspaceRoot: z<string, string>;
@@ -240,6 +248,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     readonlyFileName: z<string, string>;
     maxReadOnlyEntries: z<number, number>;
     maxGrants: z<number, number>;
+    allowWritableRequests: z<boolean, boolean>;
   }>>;
   private readonly baseEntries;
   private readonly writableBaseEntries;
@@ -247,6 +256,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private readonly readonlyFileNameBase;
   private readonly maxReadOnlyEntriesBase;
   private readonly maxGrantsBase;
+  private readonly allowRequestsBase;
   private readonly readOnlyFiles;
   private readonly grants;
   /**
@@ -295,7 +305,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * 解析之前就调用的兜底路径).
    */
   private workspaceRootForSession;
-  /** 当前生效的规则文件条目上限与会话授权上限. */
+  /** 当前生效的规则文件条目上限, 会话授权上限与可写申请开关. */
   private currentLimits;
   /** 当前生效的保护路径原文: 设置页文本与规则文件原文合并. */
   currentReadOnlyText(workspaceRoot: string): string;

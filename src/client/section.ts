@@ -9,7 +9,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, READONLY_FILE_FIELD, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
+import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, READONLY_FILE_FIELD, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
 import { WriteProtectPreviewPanel } from './preview-panel.ts'
 
 /** 组件对 settings scope 的最小结构视图 (避免耦合具体包的类型导出). */
@@ -23,6 +23,7 @@ export interface WriteProtectScope {
       readonlyFileName?: string
       maxReadOnlyEntries?: number
       maxGrants?: number
+      allowWritableRequests?: boolean
     }
   }
   set(field: string, value: string | boolean | number): unknown
@@ -121,6 +122,10 @@ export function WriteProtectSection(
     listener => scope.subscribe(listener),
     () => scope.getSnapshot().value?.maxGrants ?? 8,
   )
+  const savedAllowRequests = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.allowWritableRequests ?? true,
+  )
   // null 表示没有本地编辑: 输入框展示 Host 侧的当前值.
   const [patternsDraft, setPatternsDraft] = useState<string | null>(null)
   const [writableDraft, setWritableDraft] = useState<string | null>(null)
@@ -128,6 +133,7 @@ export function WriteProtectSection(
   const [fileNameDraft, setFileNameDraft] = useState<string | null>(null)
   const [maxEntriesDraft, setMaxEntriesDraft] = useState<string | null>(null)
   const [maxGrantsDraft, setMaxGrantsDraft] = useState<string | null>(null)
+  const [allowRequestsDraft, setAllowRequestsDraft] = useState<boolean | null>(null)
   const [saving, setSaving] = useState(false)
   const [view, setView] = useState<'edit' | 'preview'>('edit')
   const [previewing, setPreviewing] = useState(false)
@@ -139,12 +145,14 @@ export function WriteProtectSection(
   const fileNameValue = fileNameDraft ?? savedFileName
   const maxEntriesValue = maxEntriesDraft ?? String(savedMaxEntries)
   const maxGrantsValue = maxGrantsDraft ?? String(savedMaxGrants)
+  const allowRequestsValue = allowRequestsDraft ?? savedAllowRequests
   const dirty = (patternsDraft !== null && patternsDraft !== savedPatterns)
     || (writableDraft !== null && writableDraft !== savedWritable)
     || (hardenDraft !== null && hardenDraft !== savedHarden)
     || (fileNameDraft !== null && fileNameDraft !== savedFileName)
     || (maxEntriesDraft !== null && maxEntriesDraft !== String(savedMaxEntries))
     || (maxGrantsDraft !== null && maxGrantsDraft !== String(savedMaxGrants))
+    || (allowRequestsDraft !== null && allowRequestsDraft !== savedAllowRequests)
 
   const onPreview = (): void => {
     setPreviewing(true)
@@ -216,6 +224,7 @@ export function WriteProtectSection(
     if (fileNameDraft !== null) writes.push(Promise.resolve(scope.set(READONLY_FILE_FIELD, fileNameDraft)))
     if (maxEntriesDraft !== null) writes.push(Promise.resolve(scope.set(MAX_READONLY_ENTRIES_FIELD, parsePositive(maxEntriesDraft, savedMaxEntries))))
     if (maxGrantsDraft !== null) writes.push(Promise.resolve(scope.set(MAX_GRANTS_FIELD, parsePositive(maxGrantsDraft, savedMaxGrants))))
+    if (allowRequestsDraft !== null) writes.push(Promise.resolve(scope.set(ALLOW_REQUESTS_FIELD, allowRequestsDraft)))
     void Promise.all(writes).then(() => {
       setSaving(false)
       setPatternsDraft(null)
@@ -224,6 +233,7 @@ export function WriteProtectSection(
       setFileNameDraft(null)
       setMaxEntriesDraft(null)
       setMaxGrantsDraft(null)
+      setAllowRequestsDraft(null)
     })
   }
 
@@ -279,6 +289,28 @@ export function WriteProtectSection(
         createElement('code', null, '/tmp/extra'), ' 或 ', createElement('code', null, '//tmp/extra'),
         '), 相对路径 (含 ', createElement('code', null, '..'),
         ') 相对当前会话工作区. 工作区内的路径本来就可写, 会被忽略; 文件系统根会被拒绝. 保护路径仍然优先. 清空即不额外放行. Windows 上仅 write/edit 工具生效, bash 仍受官方 ACL 限制.',
+      ),
+    ),
+    createElement(
+      'div',
+      { className: 'dsh-wp-card' },
+      createElement('h3', { className: 'dsh-wp-card-title' }, '模型申请可写路径'),
+      createElement(
+        'label',
+        { className: 'dsh-wp-toggle' },
+        createElement('input', {
+          type: 'checkbox',
+          checked: allowRequestsValue,
+          onChange: (event: { currentTarget: { checked: boolean } }) => setAllowRequestsDraft(event.currentTarget.checked),
+        }),
+        createElement('span', null, allowRequestsValue ? '允许申请' : '不允许申请'),
+      ),
+      createElement(
+        'p',
+        { className: 'dsh-wp-hint' },
+        '开启后提示词会引导模型在写入被挡住时调用 ',
+        createElement('code', null, 'request_writable_path'),
+        ', 由你在审批弹窗里逐次决定; 关掉后该工具的任何调用都被拒绝, 提示词也不再引导, 模型只能照报错处理. 授权只在本会话内存里存在, 上限由上面的 "单会话可写授权上限" 决定.',
       ),
     ),
     createElement(
@@ -410,6 +442,7 @@ export function WriteProtectSection(
             setFileNameDraft(null)
             setMaxEntriesDraft(null)
             setMaxGrantsDraft(null)
+            setAllowRequestsDraft(null)
           },
         },
         '放弃更改',

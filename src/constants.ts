@@ -25,6 +25,9 @@ export const MAX_READONLY_ENTRIES_FIELD = 'maxReadOnlyEntries'
 /** settings namespace 的单会话可写授权上限字段名. */
 export const MAX_GRANTS_FIELD = 'maxGrants'
 
+/** settings namespace 的"是否允许模型申请可写路径"开关字段名. */
+export const ALLOW_REQUESTS_FIELD = 'allowWritableRequests'
+
 /**
  * macOS broker 逃逸加固的默认值: 开启. 官方 profile 的 `(allow default)`
  * 让沙箱内一条 `open x.app` 就能经 launchd 在沙箱外执行, 属于应当默认堵上的
@@ -63,6 +66,13 @@ export const DEFAULT_MAX_READONLY_ENTRIES = 200
  * 会话内无限累积.
  */
 export const DEFAULT_MAX_GRANTS = 8
+
+/**
+ * 是否允许模型申请可写路径的默认值: 开启. 申请本身还要经审批通道由用户逐次
+ * 决定, 因此默认放开; 需要绝对不让模型提这类请求时在设置页或 patch 里关掉,
+ * 关掉后工具仍然可见但任何调用都会被拒 (提示词也不再引导模型去申请).
+ */
+export const DEFAULT_ALLOW_REQUESTS = true
 
 /**
  * 规则文件名的禁用值: 这些名字本身是配置或版本库元数据, 允许模型申请可写

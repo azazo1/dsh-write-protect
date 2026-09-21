@@ -15,7 +15,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../constants.ts'
+import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../constants.ts'
 import { mountWriteProtectSection, type WriteProtectScope } from './section.ts'
 import { sessionCwdOf, type SessionsLike } from './session-cwd.ts'
 
@@ -32,6 +32,7 @@ export interface WriteProtectSettings {
   readonlyFileName?: string
   maxReadOnlyEntries?: number
   maxGrants?: number
+  allowWritableRequests?: boolean
 }
 
 /** 未知 section 结构到类型化配置的解码; 异常结构回退 undefined (走 base 展示). */
@@ -44,6 +45,7 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   const readonlyFileName = record[READONLY_FILE_FIELD]
   const maxReadOnlyEntries = record[MAX_READONLY_ENTRIES_FIELD]
   const maxGrants = record[MAX_GRANTS_FIELD]
+  const allowRequests = record[ALLOW_REQUESTS_FIELD]
   const decoded: WriteProtectSettings = {}
   if (typeof patterns === 'string') decoded.patterns = patterns
   if (typeof writable === 'string') decoded.writablePatterns = writable
@@ -51,8 +53,10 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   if (typeof readonlyFileName === 'string') decoded.readonlyFileName = readonlyFileName
   if (typeof maxReadOnlyEntries === 'number') decoded.maxReadOnlyEntries = maxReadOnlyEntries
   if (typeof maxGrants === 'number') decoded.maxGrants = maxGrants
+  if (typeof allowRequests === 'boolean') decoded.allowWritableRequests = allowRequests
   const empty = decoded.patterns === undefined && decoded.writablePatterns === undefined && decoded.hardenBroker === undefined
     && decoded.readonlyFileName === undefined && decoded.maxReadOnlyEntries === undefined && decoded.maxGrants === undefined
+    && decoded.allowWritableRequests === undefined
   return empty ? undefined : decoded
 }
 

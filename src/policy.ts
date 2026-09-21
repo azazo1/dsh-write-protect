@@ -26,6 +26,8 @@ import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandb
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import {
+  ALLOW_REQUESTS_FIELD,
+  DEFAULT_ALLOW_REQUESTS,
   DEFAULT_HARDEN_BROKER,
   DEFAULT_MAX_GRANTS,
   DEFAULT_MAX_READONLY_ENTRIES,
@@ -93,6 +95,12 @@ export interface Config {
    * 用户保存过 `maxGrants` 后该值不再生效.
    */
   maxGrants?: number
+  /**
+   * 是否允许模型申请可写路径的部署 base, 缺省开启 (见
+   * `DEFAULT_ALLOW_REQUESTS`). 关掉后 `request_writable_path` 的任何调用都被
+   * 拒绝, 提示词也不再引导模型去申请; 用户保存过该字段后此值不再生效.
+   */
+  allowWritableRequests?: boolean
 }
 
 /** 展开结果的缓存有效时长: resolve 每个 tool call 都会调用, glob 枚举有 IO 成本. */
@@ -113,6 +121,7 @@ interface ResolvedConfigValues {
   readonly readonlyFileName: string
   readonly maxReadOnlyEntries: number
   readonly maxGrants: number
+  readonly allowWritableRequests: boolean
 }
 
 export class WriteProtectPolicyService extends SandboxPolicyService {
@@ -126,6 +135,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     readonlyFileName: z.string().default(DEFAULT_READONLY_FILE_NAME),
     maxReadOnlyEntries: z.number().default(DEFAULT_MAX_READONLY_ENTRIES),
     maxGrants: z.number().default(DEFAULT_MAX_GRANTS),
+    allowWritableRequests: z.boolean().default(DEFAULT_ALLOW_REQUESTS),
   })
 
   private readonly baseEntries: readonly string[]
@@ -134,6 +144,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   private readonly readonlyFileNameBase: string
   private readonly maxReadOnlyEntriesBase: number
   private readonly maxGrantsBase: number
+  private readonly allowRequestsBase: boolean
   private readonly readOnlyFiles: ReadOnlyFileCache
   private readonly grants: GrantsService
   /**
@@ -184,6 +195,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     this.readonlyFileNameBase = this.warnAboutFileName(config.readonlyFileName ?? DEFAULT_READONLY_FILE_NAME)
     this.maxReadOnlyEntriesBase = this.positiveLimit(config.maxReadOnlyEntries, DEFAULT_MAX_READONLY_ENTRIES, 'maxReadOnlyEntries')
     this.maxGrantsBase = this.positiveLimit(config.maxGrants, DEFAULT_MAX_GRANTS, 'maxGrants')
+    this.allowRequestsBase = config.allowWritableRequests ?? DEFAULT_ALLOW_REQUESTS
     this.readOnlyFiles = new ReadOnlyFileCache(
       this.maxReadOnlyEntriesBase,
       message => this.warn(message),
@@ -204,6 +216,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           [READONLY_FILE_FIELD]: this.readonlyFileNameBase,
           [MAX_READONLY_ENTRIES_FIELD]: this.maxReadOnlyEntriesBase,
           [MAX_GRANTS_FIELD]: this.maxGrantsBase,
+          [ALLOW_REQUESTS_FIELD]: this.allowRequestsBase,
         },
       })
       this.settingsOwner = owner
@@ -239,7 +252,11 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           if (overrides.length > 0) {
             parts.push(`Session write grants that bypass write protection for the write/edit tools (sandboxed commands still see the read-only mount): ${JSON.stringify(overrides)}.`)
           }
-          parts.push(`Extra write access is not granted by default: call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} with a path and a one-sentence justification when a write was denied by write protection or the task needs a path outside the workspace. The user decides in an approval prompt, and the grant lasts only for this session.`)
+          if (this.currentLimits().allowWritableRequests) {
+            parts.push(`Extra write access is not granted by default: call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} with a path and a one-sentence justification when a write was denied by write protection or the task needs a path outside the workspace. The user decides in an approval prompt, and the grant lasts only for this session.`)
+          } else {
+            parts.push('Extra write access is not granted by this deployment: do not ask for it, and treat denied writes as final.')
+          }
           return parts.join(' ')
         },
       })
@@ -247,12 +264,14 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
 
     // 模型的可写申请工具. 只有组合里确实有工具注册表时才注册; 工具模块静态
     // 依赖官方 `dsh-tools` (peer), 因此没有工具注册表的部署也不会加载到它.
+    // 工具始终注册 (schema 稳定), 是否受理由 allowWritableRequests 在调用时判定.
     ctx.inject(['tools'], (scope: Context) => {
       const host: GrantPolicyHost = {
         resolve: sessionId => this.resolveForSession(sessionId ?? ''),
         currentProtectedPaths: sessionId => this.resolveForSession(sessionId ?? '').readOnlyPaths ?? [],
         maxGrants: () => this.currentLimits().maxGrants,
         rulesFilePath: workspaceRoot => this.rulesFilePath(workspaceRoot),
+        allowRequests: () => this.currentLimits().allowWritableRequests,
       }
       registerRequestWritablePath(scope, this.grants, host)
     })
@@ -349,16 +368,18 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return this.workspaceRoot
   }
 
-  /** 当前生效的规则文件条目上限与会话授权上限. */
+  /** 当前生效的规则文件条目上限, 会话授权上限与可写申请开关. */
   private currentLimits(): ResolvedConfigValues {
     const section = this.settingsOwner?.get()
     const fileName = section?.[READONLY_FILE_FIELD]
     const maxEntries = section?.[MAX_READONLY_ENTRIES_FIELD]
     const maxGrants = section?.[MAX_GRANTS_FIELD]
+    const allowRequests = section?.[ALLOW_REQUESTS_FIELD]
     return {
       readonlyFileName: this.warnAboutFileName(typeof fileName === 'string' ? fileName : this.readonlyFileNameBase),
       maxReadOnlyEntries: this.positiveLimit(typeof maxEntries === 'number' ? maxEntries : this.maxReadOnlyEntriesBase, DEFAULT_MAX_READONLY_ENTRIES, 'maxReadOnlyEntries'),
       maxGrants: this.positiveLimit(typeof maxGrants === 'number' ? maxGrants : this.maxGrantsBase, DEFAULT_MAX_GRANTS, 'maxGrants'),
+      allowWritableRequests: typeof allowRequests === 'boolean' ? allowRequests : this.allowRequestsBase,
     }
   }
 
@@ -510,7 +531,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
 }
 
 /**
- * settings namespace 的字段集合: 两份多行文本, 三项数值 / 文本配置与一个开关,
+ * settings namespace 的字段集合: 两份多行文本, 三项数值 / 文本配置与两个开关,
  * 未编辑时走 base. 与 `WriteProtectSettingsSchema` 的键保持一致.
  */
 type WriteProtectSettings =
@@ -520,8 +541,9 @@ type WriteProtectSettings =
   & Record<typeof READONLY_FILE_FIELD, string>
   & Record<typeof MAX_READONLY_ENTRIES_FIELD, number>
   & Record<typeof MAX_GRANTS_FIELD, number>
+  & Record<typeof ALLOW_REQUESTS_FIELD, boolean>
 
-/** settings namespace 的 schema: 两份多行文本, 三项配置与 broker 加固开关. */
+/** settings namespace 的 schema: 两份多行文本, 三项配置, 两个开关. */
 const WriteProtectSettingsSchema = z.object({
   [PATTERNS_FIELD]: z.string(),
   [WRITABLE_FIELD]: z.string(),
@@ -529,6 +551,7 @@ const WriteProtectSettingsSchema = z.object({
   [READONLY_FILE_FIELD]: z.string(),
   [MAX_READONLY_ENTRIES_FIELD]: z.number(),
   [MAX_GRANTS_FIELD]: z.number(),
+  [ALLOW_REQUESTS_FIELD]: z.boolean(),
 })
 
 export default WriteProtectPolicyService

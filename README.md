@@ -45,6 +45,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
     # readonlyFileName: '.readonly'   # 置空即关闭工作区规则文件识别
     # maxReadOnlyEntries: 200
     # maxGrants: 8
+    # allowWritableRequests: true   # 置 false 即不许模型申请可写路径
 ```
 
 `readOnlyPaths` 的每一项是一行 gitignore 语义的模式, 数组逐行合并为生效文本:
@@ -75,7 +76,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 - 关掉后命令按官方 profile 运行, 只影响 macOS, 只影响这一个加固; 保护路径与额外可写根照常.
 - 用户在设置页拨动开关后该值不再生效.
 
-`readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` 是只读规则文件与可写申请的部署 base, 三者都可在设置页改 (见 "只读规则文件" 与 "模型申请可写路径"); 用户保存过对应字段后该值不再生效.
+`readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` 是只读规则文件与可写申请的部署 base, 都可在设置页改 (见 "只读规则文件" 与 "模型申请可写路径"); 用户保存过对应字段后该值不再生效.
 
 源码分三块, 边界是"有没有文件系统依赖":
 
@@ -126,6 +127,15 @@ secrets/
 !vendor/public/**
 ```
 
+整段保护整个工作区写 `**` 或 `/**` (两者都把工作区根当成围栏起点, 根下一切都写不进), 典型用法是"整体只读 + 让模型逐个目录申请":
+
+```text
+# <工作区根>/.readonly
+**
+```
+
+`/` 和 `.` 不是"当前目录"的意思, 它们匹配不到任何路径, 等于什么都不保护; 只保护根下第一层要写 `/*`.
+
 - 只认工作区根这一份, 不做逐目录嵌套. 每个会话按自己的工作区根各读一份.
 - 只接受普通文件: 符号链接一律拒绝 (否则规则来源可以被链到工作区外由他人改写).
 - `//` 绝对条目拒绝; 解析结果越出工作区的条目 (`..`) 拒绝; 两者都只告警不生效.
@@ -147,6 +157,7 @@ secrets/
 - 已经被允许的路径 (工作区内的未保护路径, 平台临时区, 设置页声明的额外根) 直接返回 "本来就可写", 不弹窗.
 - 拒绝 / 取消 / 组合里没有审批通道 / 会话审批策略为 `never` 时都直接失败, 并给出能区分开的说明, 模型不会把"用户拒绝"误当成"通道不可用".
 - 授权只在本会话内存里: 会话结束或进程重启即失效, 不写 settings, 不落盘. 单会话条数上限 `maxGrants` (默认 8), 超限的申请直接失败并提示.
+- 整个功能可以用 `allowWritableRequests` 关掉 (设置页的 "模型申请可写路径" 开关, 或 patch 字段): 关掉后工具的任何调用都被拒, 提示词也不再引导模型去申请, 被拒的写入只能照报错处理.
 - 用户拒绝是唯一防线: 设置页文本与规则文件里的条目都属于可申请范围, 因此"整体只读 + 逐项申请"这种用法是可行的 (`/**` 保护整个工作区, 再逐个子目录批准).
 
 ## 保护范围

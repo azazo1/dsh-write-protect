@@ -4,7 +4,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import { HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../src/constants.ts'
+import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
 
 /** schemastery schema 的可调用形态 (校验/套用默认值). */
@@ -91,18 +91,25 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     expect(resolved.hardenBroker).toBe(false)
   })
 
-  it('规则文件名与两个上限都走同一套 base 与用户覆盖', async () => {
+  it('规则文件名, 两个上限与可写申请开关都走同一套 base 与用户覆盖', async () => {
     const { policy, settings } = await setup()
     expect(settings.base()[READONLY_FILE_FIELD]).toBe('.readonly')
     expect(settings.base()[MAX_READONLY_ENTRIES_FIELD]).toBe(200)
     expect(settings.base()[MAX_GRANTS_FIELD]).toBe(8)
-    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8 })
+    expect(settings.base()[ALLOW_REQUESTS_FIELD]).toBe(true)
+    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8, allowWritableRequests: true })
     settings.save({
       [READONLY_FILE_FIELD]: 'rules.txt',
       [MAX_READONLY_ENTRIES_FIELD]: 5,
       [MAX_GRANTS_FIELD]: 2,
+      [ALLOW_REQUESTS_FIELD]: false,
     })
-    expect(policy.limits()).toEqual({ readonlyFileName: 'rules.txt', maxReadOnlyEntries: 5, maxGrants: 2 })
+    expect(policy.limits()).toEqual({ readonlyFileName: 'rules.txt', maxReadOnlyEntries: 5, maxGrants: 2, allowWritableRequests: false })
+  })
+
+  it('部署 base 可以关掉可写申请', async () => {
+    const { policy } = await setup({ allowWritableRequests: false })
+    expect(policy.limits().allowWritableRequests).toBe(false)
   })
 
   it('规则文件名置空即关闭识别, 非法名字回退默认', async () => {
@@ -117,7 +124,7 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
 
   it('部署 base 的非法上限回退默认值', async () => {
     const { policy } = await setup({ maxGrants: 0, maxReadOnlyEntries: -3 })
-    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8 })
+    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8, allowWritableRequests: true })
   })
 
   it('规则文件条目并入生效保护路径, 并能被同文件里的取反剔除', async () => {
