@@ -23,6 +23,30 @@ let ctx: Context
 let fs: WriteProtectFileSystem
 let fiber: Awaited<ReturnType<Context['plugin']>>
 
+/**
+ * 会话作用域的 policy: 生产路径上 write/edit 工具会把解析好的会话 policy 传给 fs
+ * (见官方 tool-fs). 这里走插件自己的 resolveForSession, 与审批工具同一条通道, 因此
+ * 不必拉起会话运行时 (官方 resolve 的会话分支要读真实会话日志做投影).
+ */
+function sessionPolicy() {
+  // ctx.sandboxPolicy 的类型是官方服务形态, 这里按插件服务取用同一条会话通道.
+  return (ctx.sandboxPolicy as WriteProtectPolicyService).resolveForSession('session-1', workspace)
+}
+
+/**
+ * 把 fs 包成"会话作用域"的形态: 各用例不必手写第五个参数; 显式传了 policy 的用例
+ * 照旧. 没有会话根时本插件不展开保护路径, 所以规格里必须带会话.
+ */
+function sessionFs(): WriteProtectFileSystem {
+  const raw = ctx.fs as WriteProtectFileSystem
+  const bound = Object.create(raw) as WriteProtectFileSystem
+  bound.writeText = (t, content, expected, signal, policy) =>
+    raw.writeText(t, content, expected, signal, policy ?? sessionPolicy())
+  bound.editText = (t, edit, expected, signal, policy) =>
+    raw.editText(t, edit, expected, signal, policy ?? sessionPolicy())
+  return bound
+}
+
 async function boot(
   mode: SandboxMode,
   readOnlyPaths: string[],
@@ -33,7 +57,7 @@ async function boot(
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths, writablePaths, readonlyFileName })
   fiber = await ctx.plugin(WriteProtectFileSystem, { cwd: workspace })
-  fs = ctx.fs as WriteProtectFileSystem
+  fs = sessionFs()
 }
 
 beforeEach(() => {
@@ -144,7 +168,7 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
   it('policy.resolve() 注入 canonical 化且去重的 readOnlyPaths', async () => {
     mkdirSync(join(workspace, 'gitdir'))
     await boot('workspace-write', ['gitdir', 'gitdir', `//${join(workspace, 'dist')}`])
-    const policy = ctx.sandboxPolicy.resolve()
+    const policy = sessionPolicy()
     expect(policy.readOnlyPaths).toEqual([join(workspace, 'gitdir'), join(workspace, 'dist')])
   })
 })
@@ -199,7 +223,7 @@ describe('WriteProtectFileSystem 额外可写根', () => {
     const extra = join(base, 'extra')
     mkdirSync(extra)
     await boot('workspace-write', [], ['../extra', 'src'])
-    const policy = ctx.sandboxPolicy.resolve()
+    const policy = sessionPolicy()
     expect(policy.writablePaths).toEqual([realpathSync(extra)])
   })
 })
@@ -237,13 +261,13 @@ describe('WriteProtectFileSystem 与只读规则文件', () => {
   it('设置页的保护路径被本会话旁路放行, 但规则文件自身仍被挡住', async () => {
     mkdirSync(join(workspace, 'gitdir'))
     await boot('workspace-write', ['gitdir'])
-    const policy = ctx.sandboxPolicy.resolve()
+    const policy = sessionPolicy()
     const granted = { ...policy, writableOverrides: [join(workspace, 'gitdir')] }
     await fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x', undefined, undefined, granted)
     expect(await readFile(join(workspace, 'gitdir', 'config'), 'utf8')).toBe('x')
     // 旁路不能放开规则文件: 它是规则来源.
     writeFileSync(join(workspace, '.readonly'), 'vendor\n')
-    const rules = ctx.sandboxPolicy.resolve().rulesFilePath
+    const rules = sessionPolicy().rulesFilePath
     expect(rules).toBe(join(workspace, '.readonly'))
     await expect(
       fs.writeText(target(join(workspace, '.readonly')), 'x', undefined, undefined, { ...granted, writableOverrides: [workspace] }),

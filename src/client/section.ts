@@ -180,12 +180,8 @@ export function WriteProtectSection(
       if (typeof payload.workspaceRoot !== 'string' || !Array.isArray(payload.readOnly) || !Array.isArray(payload.writable) || !Array.isArray(payload.warnings)) {
         throw new Error('preview response is malformed')
       }
-      const workspaceSource = payload.workspaceSource === 'session' || payload.workspaceSource === 'fallback'
-        ? payload.workspaceSource
-        : undefined
       setPreview({
         workspaceRoot: payload.workspaceRoot,
-        workspaceSource,
         readOnly: payload.readOnly.filter(item => typeof item === 'string'),
         writable: payload.writable.filter(item => typeof item === 'string'),
         warnings: payload.warnings.filter(item => typeof item === 'string'),

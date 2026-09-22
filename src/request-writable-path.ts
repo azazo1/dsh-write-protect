@@ -50,24 +50,33 @@ export type GrantOutcome =
   | { readonly ok: false, readonly reason: string }
 
 /**
- * 工具执行上下文里用到的会话形状 (只用到 id). `ToolRunContext` 上的 `agent` 由
- * agent loop 注入, 这里按结构取用; 交给官方审批服务时仍用 `exec.agent` 本身
- * (官方 `Agent` 类型), 不从这份结构里转.
+ * 工具执行上下文里用到的会话形状 (只用到 id 与 header.cwd). `ToolRunContext` 上的
+ * `agent` 由 agent loop 注入, 这里按结构取用; 交给官方审批服务时仍用 `exec.agent`
+ * 本身 (官方 `Agent` 类型), 不从这份结构里转.
  */
 interface ToolAgent {
-  readonly session: { readonly id: string }
+  readonly session: { readonly id: string, readonly header?: { readonly cwd?: string } }
 }
 
 /** policy service 提供给本模块的最小接口 (避免模块间直接持类). */
 export interface GrantPolicyHost {
   /**
+   * 会话的工作区根: 已记住的那份, 或调用方给的 cwd. 两者都没有时为 undefined ——
+   * 这条通道不回退部署根, 因此工具必须把它当成"判不了"而不是"没有保护".
+   * @param sessionId - 调用所属会话.
+   * @param cwd - 会话日志里的 cwd, 供会话尚未被 resolve 过时定位工作区根.
+   */
+  workspaceRootOfSession(sessionId: string, cwd?: string): string | undefined
+  /**
    * 解析一次调用的 policy. 授权按会话 id 生效, 与 policy service 内部读会话的
    * 方式一致, 因此这里传 id 而不是会话对象.
    * @param sessionId - 调用所属会话, 缺省表示无会话调用.
+   * @param cwd - 会话日志里的 cwd, 供会话尚未被 resolve 过时定位工作区根; 不给且
+   *   该会话也没被记住时保护清单为空 (不回退部署根).
    */
-  resolve(sessionId?: string): SandboxExecutionPolicy
+  resolve(sessionId?: string, cwd?: string): SandboxExecutionPolicy
   /** 当前生效的保护路径展开形态 (设置页文本与规则文件合并后). */
-  currentProtectedPaths(sessionId?: string): readonly string[]
+  currentProtectedPaths(sessionId?: string, cwd?: string): readonly string[]
   /** 单会话授权上限. */
   maxGrants(): number
   /** 当前工作区根的只读规则文件路径 (文件名关闭时为 undefined). */
@@ -252,8 +261,14 @@ async function requestAccess(
   const agent = (exec as ToolRunContext & { agent?: ToolAgent }).agent
   const sessionId = agent?.session.id
   if (sessionId === undefined) throw new Error('request_writable_path needs a session to attach the grant to')
-  const policy = host.resolve(sessionId)
-  const workspaceRoot = policy.workspaceRoot
+  // 会话 cwd 一起交给 policy: 会话还没被 resolve 过时靠它定位工作区根. 两处都不
+  // 提供根时按"判不了"处理, 不回退部署根 (那可能是一次几十秒的同步扫盘).
+  const sessionCwd = agent?.session.header?.cwd
+  const workspaceRoot = host.workspaceRootOfSession(sessionId, sessionCwd)
+  if (workspaceRoot === undefined) {
+    throw new Error(`request_writable_path cannot judge write protection: session "${sessionId}" has no workspace root (its log has no cwd and no earlier policy resolution recorded one); do not retry this tool for this session`)
+  }
+  const policy = host.resolve(sessionId, sessionCwd)
 
   // 只读规则文件本身不接受申请: 它自己就是规则来源, 放宽它等于让写入方改写规则.
   // 用户要改规则就改设置页的文件名, 或者在 DSH 之外编辑那份文件.
@@ -289,7 +304,7 @@ async function requestAccess(
         }
       }
     }
-    const hit = await protectedBy(target, host.currentProtectedPaths(sessionId))
+    const hit = await protectedBy(target, host.currentProtectedPaths(sessionId, sessionCwd))
     if (hit === undefined) {
       return {
         path: target,

@@ -1,4 +1,5 @@
-// mountPreviewRoute: 请求体可带当前会话 cwd, 缺省才用部署回退根.
+// mountPreviewRoute: 请求体必须带当前会话 cwd. 没有根就直接 400 —— 不回退部署根
+// (部署根是进程 cwd, 可能是一棵极大的树, 在那里同步展开会堵住 Host 事件循环).
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { resolve as resolvePath, join } from 'node:path'
@@ -40,34 +41,28 @@ async function post(handler: Handler, body: unknown): Promise<{ status: number, 
 }
 
 let sessionWs: string
-let fallbackWs: string
 
 beforeAll(() => {
   sessionWs = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-preview-session-')))
-  fallbackWs = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-preview-fallback-')))
   mkdirSync(join(sessionWs, 'gitdir'))
-  mkdirSync(join(fallbackWs, 'gitdir'))
 })
 
 afterAll(() => {
   rmSync(sessionWs, { recursive: true, force: true })
-  rmSync(fallbackWs, { recursive: true, force: true })
 })
 
 describe('mountPreviewRoute', () => {
-  it('未带 workspaceRoot 时按部署回退根展开', async () => {
+  it('未带 workspaceRoot 时返回 400, 不回退部署根', async () => {
     const fake = fakeConnection()
-    mountPreviewRoute(fake.connection, fallbackWs)
+    mountPreviewRoute(fake.connection)
     const result = await post(fake.handler(), { patterns: 'gitdir', writablePatterns: '' })
-    expect(result.status).toBe(200)
-    expect(result.json.workspaceRoot).toBe(fallbackWs)
-    expect(result.json.workspaceSource).toBe('fallback')
-    expect(result.json.readOnly).toEqual([join(fallbackWs, 'gitdir')])
+    expect(result.status).toBe(400)
+    expect(String(result.json.error)).toContain('session workspace root')
   })
 
   it('请求体带当前会话 cwd 时按该根展开', async () => {
     const fake = fakeConnection()
-    mountPreviewRoute(fake.connection, fallbackWs)
+    mountPreviewRoute(fake.connection)
     const result = await post(fake.handler(), {
       patterns: 'gitdir',
       writablePatterns: '',
@@ -75,22 +70,20 @@ describe('mountPreviewRoute', () => {
     })
     expect(result.status).toBe(200)
     expect(result.json.workspaceRoot).toBe(sessionWs)
-    expect(result.json.workspaceSource).toBe('session')
     expect(result.json.readOnly).toEqual([join(sessionWs, 'gitdir')])
   })
 
-  it('空白 workspaceRoot 视为缺省, 走回退根', async () => {
+  it('空白 workspaceRoot 视为缺省, 同样 400', async () => {
     const fake = fakeConnection()
-    mountPreviewRoute(fake.connection, fallbackWs)
+    mountPreviewRoute(fake.connection)
     const result = await post(fake.handler(), { patterns: 'gitdir', workspaceRoot: '  ' })
-    expect(result.status).toBe(200)
-    expect(result.json.workspaceSource).toBe('fallback')
-    expect(result.json.workspaceRoot).toBe(fallbackWs)
+    expect(result.status).toBe(400)
+    expect(String(result.json.error)).toContain('session workspace root')
   })
 
   it('非字符串 workspaceRoot 返回 400', async () => {
     const fake = fakeConnection()
-    mountPreviewRoute(fake.connection, fallbackWs)
+    mountPreviewRoute(fake.connection)
     const result = await post(fake.handler(), { patterns: 'gitdir', workspaceRoot: ['/ws'] })
     expect(result.status).toBe(400)
     expect(result.json.error).toBe('workspaceRoot must be a string')
@@ -98,13 +91,12 @@ describe('mountPreviewRoute', () => {
 
   it('会话 cwd 会按官方规则规范化', async () => {
     const fake = fakeConnection()
-    mountPreviewRoute(fake.connection, fallbackWs)
+    mountPreviewRoute(fake.connection)
     const result = await post(fake.handler(), {
       patterns: '',
       workspaceRoot: join(sessionWs, '.', 'gitdir', '..'),
     })
     expect(result.status).toBe(200)
     expect(result.json.workspaceRoot).toBe(resolvePath(sessionWs))
-    expect(result.json.workspaceSource).toBe('session')
   })
 })

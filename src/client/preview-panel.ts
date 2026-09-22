@@ -59,9 +59,7 @@ export function WriteProtectPreviewPanel(
       { className: 'dsh-wp-hint' },
       '工作区根: ',
       createElement('code', null, preview.workspaceRoot),
-      preview.workspaceSource === 'session'
-        ? '. 相对条目按当前会话 cwd 解析.'
-        : '. 未选中会话, 按部署回退根解析; 打开会话后再预览会对该会话生效.',
+      '. 相对条目按当前会话 cwd 解析.',
     ),
     createElement('p', { className: 'dsh-wp-preview-label' }, `保护路径 (${String(preview.readOnly.length)})`),
     pathList(React, preview.readOnly, '无生效保护路径'),

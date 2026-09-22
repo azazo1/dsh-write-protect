@@ -2,10 +2,18 @@
 // policy 的注入语义. settings 与 sessionProjections 由最小替身提供, 替身按官方
 // 契约做 base -> 用户 section 的分层, 并用注册时的 schema 校验解析结果.
 
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
+import { projectTmpDir } from './fixture-root.ts'
+
+/** 会话替身: policy 只用到会话 id 与 `header.cwd`. */
+function sessionStub(cwd = '/ws'): never {
+  return { id: 'session-1', header: { cwd } } as never
+}
 
 /** schemastery schema 的可调用形态 (校验/套用默认值). */
 type SectionSchema = ((value: Record<string, unknown>) => Record<string, unknown>) & { toJSON?: () => unknown }
@@ -97,7 +105,7 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
   it('两份文本仍按 settings 覆盖 base, 与开关互不影响', async () => {
     const { policy, settings } = await setup({ readOnlyPaths: ['.git'] })
     settings.save({ [PATTERNS_FIELD]: '/secrets', [HARDEN_BROKER_FIELD]: false })
-    const resolved = policy.resolve({})
+    const resolved = policy.resolve({ session: sessionStub() })
     // 文本换成 /secrets 后 .git 不再受保护 (锚定字面条目即使不存在也保留).
     expect(resolved.readOnlyPaths).toEqual(['/ws/secrets'])
     expect(resolved.hardenBroker).toBe(false)
@@ -139,10 +147,28 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8, allowWritableRequests: true })
   })
 
-  it('规则文件条目并入生效保护路径, 并能被同文件里的取反剔除', async () => {
-    // 干净的工作区里没有 .readonly: 保护路径只来自设置页文本.
+  it('无会话根时不展开保护路径: 原文进 readOnlyPatterns, 路径清单为空', async () => {
+    // 没有已知工作区根时唯一现成的候选是部署根 (进程 cwd), 在那里枚举可能是一次
+    // 几十秒的同步扫盘, 因此直接不展开.
     const { policy } = await setup({ readOnlyPaths: ['secrets/', '!/secrets/public.pem'] })
-    expect(policy.resolve({}).readOnlyPaths).toEqual([])
+    const resolved = policy.resolve({})
+    expect(resolved.readOnlyPatterns).toBe('secrets/\n!/secrets/public.pem')
+    expect(resolved.readOnlyPaths).toEqual([])
+    expect(resolved.writablePaths).toEqual([])
+    expect(resolved.rulesFilePath).toBeUndefined()
+  })
+
+  it('会话带 cwd 时按该根展开 (规则文件条目并入并可被取反剔除)', async () => {
+    const workspace = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-rules-')))
+    mkdirSync(join(workspace, 'secrets'))
+    mkdirSync(join(workspace, 'secrets', 'public.pem'))
+    try {
+      const { policy } = await setup({ workspaceRoot: workspace, readOnlyPaths: ['secrets/', '!/secrets/public.pem'] })
+      const resolved = policy.resolve({ session: sessionStub(workspace) })
+      expect(resolved.readOnlyPaths).toEqual([join(workspace, 'secrets')])
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
   })
 })
 
@@ -162,5 +188,30 @@ describe('WriteProtectPolicyService 的提示词', () => {
     const text = promptText()
     expect(text).toContain('do not ask for it')
     expect(text).not.toContain('will keep writing the same protected path or area')
+  })
+})
+
+describe('resolveForSession 的工作区根', () => {
+  it('用会话 cwd 定位工作区根, 不在部署根上做展开', async () => {
+    // 部署根与会话工作区各放一个 .git: 只有会话那一份允许出现在结果里. 这条断言
+    // 同时守住了"审批工具不在部署根 (进程 cwd) 上同步扫盘"这条边界 —— 部署根可能
+    // 是整棵 home, 在那里枚举会把 Host 事件循环堵住几十秒.
+    const deployment = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-dep-')))
+    const sessionCwd = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-cwd-')))
+    mkdirSync(join(deployment, '.git'))
+    mkdirSync(join(sessionCwd, '.git'))
+    try {
+      const { policy } = await setup({ workspaceRoot: deployment, readOnlyPaths: ['.git'] })
+      const resolved = policy.resolveForSession('session-unknown', sessionCwd)
+      expect(resolved.workspaceRoot).toBe(sessionCwd)
+      expect(resolved.readOnlyPaths).toEqual([join(sessionCwd, '.git')])
+      // cwd 与会话记录都没有时不展开, 也不回退部署根.
+      const noRoot = policy.resolveForSession('session-unknown-2')
+      expect(noRoot.readOnlyPaths).toEqual([])
+      expect(noRoot.rulesFilePath).toBeUndefined()
+    } finally {
+      rmSync(deployment, { recursive: true, force: true })
+      rmSync(sessionCwd, { recursive: true, force: true })
+    }
   })
 })

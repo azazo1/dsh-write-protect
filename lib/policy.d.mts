@@ -166,7 +166,10 @@ export declare const name = "dsh-write-protect-policy";
 export interface Config {
   /** 会话启动时的文件沙箱模式 (缺省 `read-only`, 与官方一致). */
   mode?: SandboxMode;
-  /** 无会话调用与会话没有 cwd 时的回退工作区根 (缺省 `process.cwd()`). */
+  /**
+   * 部署工作区根: 官方 resolve 在无会话 (或会话没有 cwd) 时拿它当边界. 本插件不在
+   * 它上面展开保护路径 (见 workspaceRootOfSession), 缺省 `process.cwd()`.
+   */
   workspaceRoot?: string;
   /**
    * 受保护路径部署 base: 每项一行 gitignore 语义模式, 数组逐行合并为生效文本.
@@ -298,13 +301,18 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * 每次 resolve() 顺手记录; 进程内存态, 不持久化.
    */
   private rememberSession;
-  /** 预览用: 按会话 id 回查它最近一次解析出来的工作区根. */
-  workspaceRootOfSession(sessionId: string): string | undefined;
   /**
-   * 按会话 id 取回工作区根, 缺失时回退部署根并记下 (审批工具在会话第一次
-   * 解析之前就调用的兜底路径).
+   * 会话的工作区根: 最近一次 resolve() 记下的那一份, 或调用方从会话日志带来的
+   * cwd (`resolve` 成绝对路径, 同时记下). 两者都没有时返回 undefined.
+   *
+   * 这里刻意**不回退部署根**: 部署根是进程 cwd, 可能就是一棵极大的树 (从 home
+   * 启动时的整个 home), 而保护路径展开是同步扫盘 —— 在那里枚举会把 Host 事件循环
+   * 堵住几十秒, 表现成整个 dsh 无响应. 没有根就不展开, 由调用方决定怎么办.
+   * @param sessionId - 目标会话 id.
+   * @param cwd - 会话日志里的 cwd; 缺省表示调用方拿不到.
+   * @returns 绝对工作区根, 或 undefined.
    */
-  private workspaceRootForSession;
+  workspaceRootOfSession(sessionId: string, cwd?: string): string | undefined;
   /** 当前生效的规则文件条目上限, 会话授权上限与可写申请开关. */
   private currentLimits;
   /** 当前生效的保护路径原文: 设置页文本与规则文件原文合并. */
@@ -320,6 +328,12 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   /**
    * 解析一次调用的完整生效文本: 设置页文本, 规则文件文本, 本会话授权, 以及
    * 合并后的可写文本; 按 key 做 TTL 缓存. 展开告警对每条只告警一次.
+   *
+   * `workspaceRoot` 为 undefined 表示没有已知的会话工作区根: 此时不读规则文件,
+   * 也不做展开 (返回空的路径清单与设置页原文), 因为唯一现成的候选是部署根 (进程
+   * cwd), 在那里枚举会同步堵住 Host 事件循环.
+   * @param workspaceRoot - 会话工作区根, 未知时为 undefined.
+   * @param sessionId - 调用所属会话, 缺省表示无会话调用.
    */
   private snapshot;
   /** 展开一次生效文本 (供设置页预览复用同一套解析; 不带任何会话授权). */
@@ -332,6 +346,10 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
    * 追加注入合并后的保护路径 (原文与展开形态), 规则文件原文, 额外可写根,
    * 本会话授权, 保护旁路与 broker 加固开关.
+   *
+   * 展开只在**确实知道会话工作区根**时进行 (会话日志里的 cwd); 会话没有 cwd 时
+   * 不做回退: 官方 root 此时是部署根 (进程 cwd), 可能是一棵极大的树, 在那里枚举
+   * 保护路径会同步堵住 Host 事件循环.
    * @param request - 可选的会话与已批准的模式覆盖.
    * @returns 带有 `readOnlyPatterns` / `readOnlyPaths` / `writablePaths` /
    * `writableOverrides` / `hardenBroker` 的完整逐次调用 policy.
@@ -339,11 +357,17 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   resolve(request?: Parameters<SandboxPolicyService['resolve']>[0]): SandboxExecutionPolicy;
   /**
    * 按会话 id 解析一次 policy: 给只拿得到会话 id 的消费方 (审批工具) 用. 工作区
-   * 根取该会话最近一次解析出来的那一份, 因此与围栏看到的 policy 是同一个根;
-   * 会话对象本身拿不到, 因此不再走官方 resolve 的会话分支 (模式回落到部署默认).
+   * 根取该会话最近一次解析出来的那一份, 没有就用调用方给的 cwd, 两者都没有时
+   * 保护路径不展开 (readOnlyPaths / writablePaths 为空) —— 不回退部署根.
+   *
+   * 这里刻意不走本类覆写过的 `resolve()`: 那一支会先按"无会话"解析一次, 从而把
+   * 保护路径展开到部署根 (进程 cwd) 上. 部署根很大时那是一次几十秒的同步扫盘,
+   * Host 事件循环会被它堵死. 本方法只借 super 的 mode 与部署默认值, 保护范围随后
+   * 全部按会话自己那份重算.
    * @param sessionId - 目标会话 id.
+   * @param cwd - 会话日志里的 cwd, 供会话尚未被 resolve 过时定位工作区根.
    */
-  resolveForSession(sessionId: string): SandboxExecutionPolicy;
+  resolveForSession(sessionId: string, cwd?: string): SandboxExecutionPolicy;
 }
 //#endregion
 export { WriteProtectPolicyService as default };

@@ -46,6 +46,7 @@ async function boot(
   readonlyFileName = '.readonly',
   maxGrants = 8,
   allowWritableRequests = true,
+  deploymentRoot = workspace,
 ): Promise<void> {
   ctx = new Context()
   approval = { outcome: 'allowed-once', policy: 'ask', requests: [] }
@@ -63,7 +64,7 @@ async function boot(
   ctx.provide('sessionProjections', { register: () => {}, stateOf: () => undefined })
   await ctx.plugin(WriteProtectPolicyService, {
     mode: 'workspace-write',
-    workspaceRoot: workspace,
+    workspaceRoot: deploymentRoot,
     readOnlyPaths,
     readonlyFileName,
     maxGrants,
@@ -73,8 +74,9 @@ async function boot(
   // 授权表用 policy 自己那一个: 生产路径上工具与 policy 共享同一份记录.
   grants = policy.grantsView()
   host = {
-    resolve: sessionId => policy.resolveForSession(sessionId ?? SESSION_ID),
-    currentProtectedPaths: sessionId => policy.resolveForSession(sessionId ?? SESSION_ID).readOnlyPaths ?? [],
+    workspaceRootOfSession: (sessionId, cwd) => policy.workspaceRootOfSession(sessionId, cwd),
+    resolve: (sessionId, cwd) => policy.resolveForSession(sessionId ?? SESSION_ID, cwd),
+    currentProtectedPaths: (sessionId, cwd) => policy.resolveForSession(sessionId ?? SESSION_ID, cwd).readOnlyPaths ?? [],
     maxGrants: () => maxGrants,
     rulesFilePath: workspaceRoot => policy.rulesFilePath(workspaceRoot),
     allowRequests: () => allowWritableRequests,
@@ -83,10 +85,19 @@ async function boot(
   policy.resolve({ session: sessionStub() })
 }
 
-/** 工具执行上下文替身: 只用到 agent / callId / signal. */
-function exec(callId = 'call-1'): ToolRunContext {
+/** 工具执行上下文替身: 只用到 agent (id 与 header.cwd) / callId / signal. */
+function exec(callId = 'call-1', sessionId = SESSION_ID, cwd = workspace): ToolRunContext {
   return {
-    agent: { session: { id: SESSION_ID } },
+    agent: { session: { id: sessionId, header: { cwd } } },
+    callId,
+    signal: new AbortController().signal,
+  } as unknown as ToolRunContext
+}
+
+/** 会话日志里没有 cwd 的执行上下文: 用来验证"判不了就报错"这条 fail-closed 分支. */
+function execWithoutCwd(callId = 'call-1', sessionId = SESSION_ID): ToolRunContext {
+  return {
+    agent: { session: { id: sessionId, header: {} } },
     callId,
     signal: new AbortController().signal,
   } as unknown as ToolRunContext
@@ -262,6 +273,39 @@ describe('handleRequest 的拒绝路径', () => {
     await boot([], '.readonly', 1)
     await handleRequest(ctx, grants, host, join(workspace, 'a'), '第一个', exec('call-a'))
     await expect(handleRequest(ctx, grants, host, join(workspace, 'b'), '第二个', exec('call-b'))).rejects.toThrow('maximum of 1')
+  })
+})
+
+describe('工作区根解析', () => {
+  // 部署根换成 outside (里面没有 .git), 会话工作区里有 .git. 若判定回退到部署根,
+  // 保护集合会是空的, 工具就会直接答"本来就可写"而不审批 —— 这正是 Host 事件循环
+  // 被几十秒同步展开堵死的那条老路径的判定后果.
+  it('会话尚未被 resolve 记住时, 用会话 cwd 定位工作区根', async () => {
+    // .git 要在 boot 之前建好: 展开结果按 root 做 5s TTL 缓存, boot 里那次 resolve
+    // 会先把空结果缓存下来.
+    mkdirSync(join(workspace, '.git'))
+    await boot(['.git'], '.readonly', 8, true, outside)
+    const result = await handleRequest(
+      ctx, grants, host, join(workspace, '.git', 'HEAD'), '需要写这个受保护目录', exec('call-fresh', 'session-fresh'),
+    )
+    expect(result.kind).toBe('override')
+    expect(approval.requests).toHaveLength(1)
+  })
+
+  it('会话已被 resolve 记住时沿用记下的根', async () => {
+    mkdirSync(join(workspace, '.git'))
+    await boot(['.git'], '.readonly', 8, true, outside)
+    const result = await handleRequest(ctx, grants, host, join(workspace, '.git', 'HEAD'), '再来一次', exec())
+    expect(result.kind).toBe('override')
+    expect(approval.requests).toHaveLength(1)
+  })
+
+  it('会话没有 cwd 且从未被 resolve 过时报错, 不回退部署根', async () => {
+    await boot(['.git'], '.readonly', 8, true, outside)
+    await expect(handleRequest(
+      ctx, grants, host, join(workspace, '.git', 'HEAD'), '没有根', execWithoutCwd('call-no-root', 'session-no-root'),
+    )).rejects.toThrow(/has no workspace root/)
+    expect(approval.requests).toHaveLength(0)
   })
 })
 
