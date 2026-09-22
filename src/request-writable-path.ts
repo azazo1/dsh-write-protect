@@ -27,7 +27,7 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import { canonicalPath, writableRoots } from '@deepseek-ai/dsh-sandbox'
 import { isPathUnder } from './containment.ts'
 import { REQUEST_WRITABLE_PATH_TOOL, type GrantKind } from './constants.ts'
-import { expandWritablePaths } from './patterns.ts'
+import { resolveLiteralPath } from './patterns.ts'
 
 /** 一条已批准的可写授权. */
 export interface Grant {
@@ -277,13 +277,19 @@ async function requestAccess(
     throw new Error(`request_writable_path rejected: "${rawPath}" is the workspace write-protect rules file, which is read-only by design and cannot be granted`)
   }
 
-  // 额外可写根那套字面路径展开: 工作区内的路径会被它标成"本来就可写"并跳过, 而
-  // 本工具恰恰要受理工作区内的被保护路径, 因此这一条告警按可受理处理, 其余告警
-  // (通配符, 盘符相对路径, 文件系统根) 仍然直接拒绝.
-  const expanded = expandWritablePaths(rawPath, workspaceRoot)
-  const blocking = expanded.warnings.filter(warning => !warning.includes('already inside the workspace'))
+  // 目标路径按"额外可写根那套字面路径规则"解析: 相对条目先相对会话工作区根定死,
+  // 再 canonical 化; 工作区内的条目照样给出路径 (这里恰恰要受理它们), 只有其余
+  // 行级告警 (通配符, 盘符相对路径, 文件系统根) 才直接拒绝. 不能直接用
+  // canonicalPath(rawPath): 相对且不存在的路径会原样返回相对形态, 于是工作区内的
+  // 申请被误判成工作区外 (审批文案说错), 批准后记下的相对授权在下一次展开时又落回
+  // 工作区内被丢弃, 等于批了也不生效.
+  const resolution = resolveLiteralPath(rawPath, workspaceRoot)
+  const blocking = resolution.warnings.filter(warning => !warning.includes('already inside the workspace'))
   if (blocking.length > 0) throw new Error(`request_writable_path rejected: ${blocking[0]!}`)
-  const target = expanded.paths[0] ?? canonicalPath(rawPath)
+  if (resolution.path === undefined) {
+    throw new Error(`request_writable_path rejected: "${rawPath}" has no target path; give an absolute path, or one relative to the session workspace`)
+  }
+  const target = resolution.path
 
   // 工作区内的路径: 判定它是否落在当前生效的保护路径之下. 设置页文本与规则文件
   // 都只是"当前的保护范围", 不构成不可申请的白名单: 用户可以整段保护工作区

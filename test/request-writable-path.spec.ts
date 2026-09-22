@@ -307,6 +307,22 @@ describe('工作区根解析', () => {
     )).rejects.toThrow(/has no workspace root/)
     expect(approval.requests).toHaveLength(0)
   })
+
+  it('工作区内的相对路径按工作区根解析, 不会被当成工作区外', async () => {
+    // 相对且不存在的路径上 canonicalPath 会原样返回相对形态; 若直接拿它判定, 相对
+    // 路径落在 isPathUnder 之外, 就会被当成 extra-root 去问"工作区外写入".
+    mkdirSync(join(workspace, '.git'))
+    await boot(['.git'], '.readonly', 8, true, outside)
+    const result = await handleRequest(ctx, grants, host, join('.git', 'HEAD'), '相对路径申请', exec('call-relative'))
+    expect(result.kind).toBe('override')
+    expect(result.path).toBe(join(workspace, '.git', 'HEAD'))
+    expect(approval.requests[0]!.reason).toContain('overriding write protection')
+    expect(approval.requests[0]!.reason).toContain('.git')
+    expect(approval.requests[0]!.reason).not.toContain('outside the session workspace')
+    // 授权必须记在绝对路径上: 记成相对形态的话, 下一次展开会把它当工作区内条目丢掉,
+    // 于是批了也不生效.
+    expect(host.resolve(SESSION_ID, workspace)?.writableOverrides).toEqual([join(workspace, '.git', 'HEAD')])
+  })
 })
 
 describe('GrantsService', () => {
