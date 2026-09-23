@@ -215,3 +215,28 @@ describe('resolveForSession 的工作区根', () => {
     }
   })
 })
+
+describe('会话授权与只读展开缓存解耦', () => {
+  it('批准会话授权后直接并入 policy, 不会作废只读展开缓存 (避免重新扫盘)', async () => {
+    const workspace = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-grant-cache-')))
+    mkdirSync(join(workspace, '.git'))
+    try {
+      const { policy } = await setup({ workspaceRoot: workspace, readOnlyPaths: ['.git'] })
+      const session = { id: 'session-grant-1', header: { cwd: workspace } } as never
+      const first = policy.resolve({ session })
+      expect(first.readOnlyPaths).toEqual([join(workspace, '.git')])
+      expect(first.writableOverrides).toEqual([])
+
+      // 模拟授予可写权限 (向 GrantsService 写入一条授权)
+      const grants = policy.grantsView()
+      grants.grant('session-grant-1', join(workspace, '.git', 'HEAD'), 'override')
+
+      // 下一次 resolve: 只读展开结果必须稳定复用同一个数组引用 (未重新扫盘), 同时包含新的 override
+      const second = policy.resolve({ session })
+      expect(second.readOnlyPaths).toBe(first.readOnlyPaths)
+      expect(second.writableOverrides).toEqual([join(workspace, '.git', 'HEAD')])
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+})

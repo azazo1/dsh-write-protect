@@ -269,7 +269,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    */
   private readonly sessionRoots;
   private settingsOwner;
-  private cache;
+  private readOnlyCache;
   private readonly warned;
   constructor(ctx: Context, config: Config);
   /** 部署 base 的保护路径文本形态 (patch 数组逐行合并). */
@@ -323,12 +323,14 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private positiveLimit;
   /** 告警去重后写到日志. */
   private warn;
-  /** 设置 / 授权 / 规则文件变化后作废展开缓存. */
+  /** 设置 / 规则文件变化后作废只读展开缓存. */
   private invalidate;
   /**
    * 解析一次调用的完整生效文本: 设置页文本, 规则文件文本, 本会话授权, 以及
-   * 合并后的可写文本; 按 key 做 TTL 缓存. 展开告警对每条只告警一次.
+   * 合并后的可写文本.
    *
+   * 只读展开 (昂贵的扫盘操作) 按 (settingsText, file.text, workspaceRoot) 做 TTL 缓存;
+   * 会话授权变动只追加可写根与保护旁路, 不作废只读展开缓存, 避免申请授权后重新扫盘.
    * `workspaceRoot` 为 undefined 表示没有已知的会话工作区根: 此时不读规则文件,
    * 也不做展开 (返回空的路径清单与设置页原文), 因为唯一现成的候选是部署根 (进程
    * cwd), 在那里枚举会同步堵住 Host 事件循环.

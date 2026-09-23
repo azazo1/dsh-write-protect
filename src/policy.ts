@@ -157,12 +157,10 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
    */
   private readonly sessionRoots = new Map<string, string>()
   private settingsOwner: SettingsScope<WriteProtectSettings> | undefined
-  private cache: {
+  private readOnlyCache: {
     at: number
     key: string
     readOnly: readonly string[]
-    writable: readonly string[]
-    overrides: readonly string[]
     readOnlyPatterns: string
     readOnlyFilePatterns: string
     file: ReadOnlyFile
@@ -170,8 +168,6 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     at: 0,
     key: '',
     readOnly: [],
-    writable: [],
-    overrides: [],
     readOnlyPatterns: '',
     readOnlyFilePatterns: '',
     file: EMPTY_READ_ONLY_FILE,
@@ -203,9 +199,10 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       this.maxReadOnlyEntriesBase,
       message => this.warn(message),
     )
+    // 授权只在内存中追加到对应会话记录, 不改变只读规则, 不作废只读展开缓存.
     this.grants = new GrantsService(
       () => this.currentLimits().maxGrants,
-      () => this.invalidate(),
+      () => {},
     )
 
     // Web 设置页的持久化配置: composition base 是 patch 的数组与开关, 用户保存过
@@ -418,15 +415,17 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     this.ctx.logger?.warn?.(`dsh-write-protect: ${message}`)
   }
 
-  /** 设置 / 授权 / 规则文件变化后作废展开缓存. */
+  /** 设置 / 规则文件变化后作废只读展开缓存. */
   private invalidate(): void {
-    this.cache = { ...this.cache, at: 0, key: '' }
+    this.readOnlyCache = { ...this.readOnlyCache, at: 0, key: '' }
   }
 
   /**
    * 解析一次调用的完整生效文本: 设置页文本, 规则文件文本, 本会话授权, 以及
-   * 合并后的可写文本; 按 key 做 TTL 缓存. 展开告警对每条只告警一次.
+   * 合并后的可写文本.
    *
+   * 只读展开 (昂贵的扫盘操作) 按 (settingsText, file.text, workspaceRoot) 做 TTL 缓存;
+   * 会话授权变动只追加可写根与保护旁路, 不作废只读展开缓存, 避免申请授权后重新扫盘.
    * `workspaceRoot` 为 undefined 表示没有已知的会话工作区根: 此时不读规则文件,
    * 也不做展开 (返回空的路径清单与设置页原文), 因为唯一现成的候选是部署根 (进程
    * cwd), 在那里枚举会同步堵住 Host 事件循环.
@@ -447,44 +446,50 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
         file: EMPTY_READ_ONLY_FILE,
       }
     }
-    const writableSettingsText = this.currentWritableText()
     const file = this.readOnlyFileAt(workspaceRoot)
     const readOnlyPatterns = mergeReadOnlyText(settingsText, file.text)
-    const writableText = [...record.extraRoots, writableSettingsText].filter(line => line.trim().length > 0).join('\n')
-    const key = [settingsText, file.text, writableText, record.overrides.join('\n'), workspaceRoot].join('\u0000')
+    const readOnlyKey = [settingsText, file.text, workspaceRoot].join('\u0000')
     const now = Date.now()
-    if (now - this.cache.at < EXPAND_TTL_MS && this.cache.key === key) {
-      return {
-        readOnlyPatterns: this.cache.readOnlyPatterns,
-        readOnlyFilePatterns: this.cache.readOnlyFilePatterns,
-        readOnly: this.cache.readOnly,
-        writable: this.cache.writable,
-        overrides: this.cache.overrides,
-        file: this.cache.file,
+    let readOnlySnapshot: {
+      readOnlyPatterns: string
+      readOnlyFilePatterns: string
+      readOnly: readonly string[]
+      file: ReadOnlyFile
+    }
+    if (now - this.readOnlyCache.at < EXPAND_TTL_MS && this.readOnlyCache.key === readOnlyKey) {
+      readOnlySnapshot = this.readOnlyCache
+    } else {
+      const readOnly = expandReadOnlyPaths(readOnlyPatterns, workspaceRoot)
+      for (const warning of readOnly.warnings) {
+        this.warn(warning)
+      }
+      readOnlySnapshot = {
+        readOnlyPatterns,
+        readOnlyFilePatterns: file.text,
+        readOnly: readOnly.paths,
+        file,
+      }
+      this.readOnlyCache = {
+        at: now,
+        key: readOnlyKey,
+        ...readOnlySnapshot,
       }
     }
-    const readOnly = expandReadOnlyPaths(readOnlyPatterns, workspaceRoot)
+
+    const writableSettingsText = this.currentWritableText()
+    const writableText = [...record.extraRoots, writableSettingsText].filter(line => line.trim().length > 0).join('\n')
     const writable = expandWritablePaths(writableText, workspaceRoot)
-    for (const warning of [...readOnly.warnings, ...writable.warnings]) {
+    for (const warning of writable.warnings) {
       this.warn(warning)
     }
-    this.cache = {
-      at: now,
-      key,
-      readOnly: readOnly.paths,
-      writable: writable.paths,
-      overrides: record.overrides,
-      readOnlyPatterns,
-      readOnlyFilePatterns: file.text,
-      file,
-    }
+
     return {
-      readOnlyPatterns,
-      readOnlyFilePatterns: file.text,
-      readOnly: readOnly.paths,
+      readOnlyPatterns: readOnlySnapshot.readOnlyPatterns,
+      readOnlyFilePatterns: readOnlySnapshot.readOnlyFilePatterns,
+      readOnly: readOnlySnapshot.readOnly,
       writable: writable.paths,
       overrides: record.overrides,
-      file,
+      file: readOnlySnapshot.file,
     }
   }
 
