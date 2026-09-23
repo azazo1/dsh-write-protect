@@ -6,7 +6,13 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../src/constants.ts'
+import {
+  ALLOW_REQUESTS_FIELD, DEFAULT_ALLOW_REQUESTS, DEFAULT_HARDEN_BROKER,
+  DEFAULT_MAX_GRANTS, DEFAULT_MAX_READONLY_ENTRIES, DEFAULT_READONLY_FILE_NAME,
+  DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS,
+  HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
+  PATTERNS_FIELD, READONLY_FILE_FIELD, WRITABLE_FIELD,
+} from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
@@ -15,41 +21,28 @@ function sessionStub(cwd = '/ws'): never {
   return { id: 'session-1', header: { cwd } } as never
 }
 
-/** schemastery schema 的可调用形态 (校验/套用默认值). */
-type SectionSchema = ((value: Record<string, unknown>) => Record<string, unknown>) & { toJSON?: () => unknown }
-
 interface FakeSettings {
-  service: { register: (ns: string, schema: SectionSchema, options: { base?: Record<string, unknown> }) => unknown }
   /** 模拟用户在设置页保存的 section (留空表示从未保存过). */
   save(section: Record<string, unknown>): void
   /** 注册时收到的 base (部署层). */
   base(): Record<string, unknown>
 }
 
-function fakeSettings(): FakeSettings {
-  let user: Record<string, unknown> = {}
-  let base: Record<string, unknown> = {}
+function fakeSettings(config: Partial<Config>): FakeSettings {
+  const state: Record<string, unknown> = {
+    [HARDEN_BROKER_FIELD]: config.hardenBroker ?? DEFAULT_HARDEN_BROKER,
+    [READONLY_FILE_FIELD]: config.readonlyFileName ?? DEFAULT_READONLY_FILE_NAME,
+    [MAX_READONLY_ENTRIES_FIELD]: config.maxReadOnlyEntries ?? DEFAULT_MAX_READONLY_ENTRIES,
+    [MAX_GRANTS_FIELD]: config.maxGrants ?? DEFAULT_MAX_GRANTS,
+    [ALLOW_REQUESTS_FIELD]: config.allowWritableRequests ?? DEFAULT_ALLOW_REQUESTS,
+    [PATTERNS_FIELD]: config.patterns,
+    [WRITABLE_FIELD]: config.writablePatterns,
+  }
   return {
-    service: {
-      register: (_ns, schema, options) => {
-        base = options.base ?? {}
-        const owner = {
-          get: () => schema({ ...base, ...user }),
-          watch: () => () => {},
-          update: async (patch: Record<string, unknown>) => {
-            user = { ...user, ...patch }
-          },
-          replace: async (section: Record<string, unknown>) => {
-            user = section
-          },
-        }
-        return owner
-      },
-    },
     save(section) {
-      user = section
+      Object.assign(state, section)
     },
-    base: () => base,
+    base: () => state,
   }
 }
 
@@ -60,10 +53,25 @@ async function setup(config: Partial<Config> = {}): Promise<{
   promptText: () => string
 }> {
   const ctx = new Context()
-  const settings = fakeSettings()
+  const settings = fakeSettings(config)
+  const state = settings.base()
+  const ref = <T>(key: string) => ({ get: () => state[key] as T })
+  const runtimeConfig = {
+    workspaceRoot: '/ws',
+    mode: 'workspace-write',
+    ...config,
+    readOnlyPaths: config.readOnlyPaths ?? [...DEFAULT_READ_ONLY_PATHS],
+    writablePaths: config.writablePaths ?? [...DEFAULT_WRITABLE_PATHS],
+    patterns: ref<string | undefined>(PATTERNS_FIELD),
+    writablePatterns: ref<string | undefined>(WRITABLE_FIELD),
+    hardenBroker: ref<boolean>(HARDEN_BROKER_FIELD),
+    readonlyFileName: ref<string>(READONLY_FILE_FIELD),
+    maxReadOnlyEntries: ref<number>(MAX_READONLY_ENTRIES_FIELD),
+    maxGrants: ref<number>(MAX_GRANTS_FIELD),
+    allowWritableRequests: ref<boolean>(ALLOW_REQUESTS_FIELD),
+  }
   // 投影替身要带 stateOf: 提示词组装会经 resolve() 读沙箱模式覆盖.
   ctx.provide('sessionProjections', { register: () => {}, stateOf: () => undefined })
-  ctx.provide('settings', settings.service)
   let text = ''
   ctx.provide('systemPrompt', {
     context: (entry: { text: (context: unknown) => string }) => {
@@ -71,9 +79,12 @@ async function setup(config: Partial<Config> = {}): Promise<{
     },
     getContextOrder: () => 0,
   })
-  await ctx.plugin(WriteProtectPolicyService, { workspaceRoot: '/ws', mode: 'workspace-write', ...config })
-  // settings 注入是异步 fiber: 让 inject 回调先跑完再断言.
-  await new Promise(resolve => setTimeout(resolve, 0))
+  await ctx.plugin({
+    name: 'write-protect-policy-test',
+    apply(inner) {
+      new WriteProtectPolicyService(inner, runtimeConfig as unknown as Config)
+    },
+  })
   const policy = (ctx as unknown as { sandboxPolicy: WriteProtectPolicyService }).sandboxPolicy
   return { policy, settings, promptText: () => text }
 }

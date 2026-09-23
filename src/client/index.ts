@@ -26,6 +26,8 @@ const React = require('react') as typeof import('react')
 
 /** Host settings namespace 解码后的形状. 缺省字段不出现, 让 Host 走 base. */
 export interface WriteProtectSettings {
+  readOnlyPaths?: string[]
+  writablePaths?: string[]
   patterns?: string
   writablePatterns?: string
   hardenBroker?: boolean
@@ -41,12 +43,20 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   const record = section as Record<string, unknown>
   const patterns = record[PATTERNS_FIELD]
   const writable = record[WRITABLE_FIELD]
+  const readOnlyPaths = record.readOnlyPaths
+  const writablePaths = record.writablePaths
   const hardenBroker = record[HARDEN_BROKER_FIELD]
   const readonlyFileName = record[READONLY_FILE_FIELD]
   const maxReadOnlyEntries = record[MAX_READONLY_ENTRIES_FIELD]
   const maxGrants = record[MAX_GRANTS_FIELD]
   const allowRequests = record[ALLOW_REQUESTS_FIELD]
   const decoded: WriteProtectSettings = {}
+  if (Array.isArray(readOnlyPaths) && readOnlyPaths.every(item => typeof item === 'string')) {
+    decoded.readOnlyPaths = readOnlyPaths
+  }
+  if (Array.isArray(writablePaths) && writablePaths.every(item => typeof item === 'string')) {
+    decoded.writablePaths = writablePaths
+  }
   if (typeof patterns === 'string') decoded.patterns = patterns
   if (typeof writable === 'string') decoded.writablePatterns = writable
   if (typeof hardenBroker === 'boolean') decoded.hardenBroker = hardenBroker
@@ -54,14 +64,18 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   if (typeof maxReadOnlyEntries === 'number') decoded.maxReadOnlyEntries = maxReadOnlyEntries
   if (typeof maxGrants === 'number') decoded.maxGrants = maxGrants
   if (typeof allowRequests === 'boolean') decoded.allowWritableRequests = allowRequests
-  const empty = decoded.patterns === undefined && decoded.writablePatterns === undefined && decoded.hardenBroker === undefined
+  const empty = decoded.readOnlyPaths === undefined && decoded.writablePaths === undefined
+    && decoded.patterns === undefined && decoded.writablePatterns === undefined && decoded.hardenBroker === undefined
     && decoded.readonlyFileName === undefined && decoded.maxReadOnlyEntries === undefined && decoded.maxGrants === undefined
     && decoded.allowWritableRequests === undefined
   return empty ? undefined : decoded
 }
 
-/** 页面依赖的服务: settingsScope 提供配置通道, slots 提供注册面, sessions 提供当前 cwd. */
-export const inject = ['settingsScope', 'slots', 'sessions']
+/** 页面依赖的服务: configForms 提供配置通道, slots 提供注册面, sessions 提供当前 cwd. */
+export const inject = ['configForms', 'slots', 'sessions']
+
+/** Policy host row id; ConfigForms is keyed by Loader entry id. */
+const CONFIG_ENTRY_ID = 'dsh-write-protect-policy'
 
 function sessionsOf(ctx: ClientContext): SessionsLike | undefined {
   return (ctx as ClientContext & { sessions?: SessionsLike }).sessions
@@ -69,10 +83,7 @@ function sessionsOf(ctx: ClientContext): SessionsLike | undefined {
 
 /** 注册独立配置页. */
 export function apply(ctx: ClientContext): void {
-  const scope = ctx.settingsScope.bind<WriteProtectSettings>({
-    namespace: PLUGIN_ID,
-    decode: decodeWriteProtectSettings,
-  }) as unknown as WriteProtectScope
+  const scope = ctx.configForms.get<WriteProtectSettings>(CONFIG_ENTRY_ID) as unknown as WriteProtectScope
 
   mountWriteProtectSection(ctx, React, scope, () => sessionCwdOf(sessionsOf(ctx)))
 }

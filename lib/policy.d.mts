@@ -2,7 +2,7 @@ import z from "@deepseek-ai/schemastery";
 import { SandboxExecutionPolicy, SandboxMode } from "@deepseek-ai/dsh-sandbox";
 import { SandboxPolicyService } from "@deepseek-ai/dsh-sandbox-policy";
 import "@deepseek-ai/dsh-tools";
-import { Context } from "@deepseek-ai/cordis";
+import { Context, Volatile } from "@deepseek-ai/cordis";
 //#region src/readonly-file.d.ts
 /**
  * 工作区只读规则文件: 在工作区根读一份 gitignore 语义的规则文件 (默认名
@@ -177,7 +177,7 @@ export interface Config {
    * `//` 开头为文件系统绝对路径; `!` 按 last-match-wins 取反.
    * 用户在 Web 设置页保存过 patterns 文本后该数组不再生效.
    */
-  readOnlyPaths?: string[];
+  readOnlyPaths?: string[] | Volatile<string[]>;
   /**
    * 额外可写根部署 base: 每项一行字面路径, 数组逐行合并为生效文本.
    * 行首 `~` / `~/...` 为当前用户家目录, `$NAME` / `${NAME}` 为环境变量;
@@ -185,35 +185,39 @@ export interface Config {
    * 只在 `workspace-write` 下并进 allow-list, 不打穿 `read-only`;
    * 保护路径优先. 用户保存过 writablePatterns 文本后该数组不再生效.
    */
-  writablePaths?: string[];
+  writablePaths?: string[] | Volatile<string[]>;
   /**
    * macOS Seatbelt broker 逃逸加固的部署 base, 缺省开启 (见
    * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
    */
-  hardenBroker?: boolean;
+  hardenBroker?: boolean | Volatile<boolean>;
   /**
    * 工作区只读规则文件名部署 base, 缺省 `.readonly` (见
    * `DEFAULT_READONLY_FILE_NAME`): 工作区根下的这份文件按 gitignore 语义解析,
    * 逐行追加在设置页文本之后; 空串表示关闭该识别. 用户保存过
    * `readonlyFileName` 后该值不再生效.
    */
-  readonlyFileName?: string;
+  readonlyFileName?: string | Volatile<string>;
   /**
    * 规则文件条目数上限部署 base, 缺省 200: 超出的条目丢弃并告警.
    * 用户保存过 `maxReadOnlyEntries` 后该值不再生效.
    */
-  maxReadOnlyEntries?: number;
+  maxReadOnlyEntries?: number | Volatile<number>;
   /**
    * 单会话可写授权条数上限部署 base, 缺省 8 (见 `DEFAULT_MAX_GRANTS`).
    * 用户保存过 `maxGrants` 后该值不再生效.
    */
-  maxGrants?: number;
+  maxGrants?: number | Volatile<number>;
   /**
    * 是否允许模型申请可写路径的部署 base, 缺省开启 (见
    * `DEFAULT_ALLOW_REQUESTS`). 关掉后 `request_writable_path` 的任何调用都被
    * 拒绝, 提示词也不再引导模型去申请; 用户保存过该字段后此值不再生效.
    */
-  allowWritableRequests?: boolean;
+  allowWritableRequests?: boolean | Volatile<boolean>;
+  /** 用户保存的保护路径多行文本; 缺省回退 readOnlyPaths. */
+  patterns?: string | Volatile<string>;
+  /** 用户保存的额外可写根多行文本; 缺省回退 writablePaths. */
+  writablePatterns?: string | Volatile<string>;
 }
 /** 一次解析得到的完整生效文本与展开结果. */
 export interface PolicySnapshot {
@@ -232,34 +236,32 @@ interface ResolvedConfigValues {
   readonly allowWritableRequests: boolean;
 }
 export declare class WriteProtectPolicyService extends SandboxPolicyService {
-  static Config: z<Schemastery.ObjectS<{
-    mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access">;
-    workspaceRoot: z<string, string>;
-    readOnlyPaths: z<string[], string[]>;
-    writablePaths: z<string[], string[]>;
-    hardenBroker: z<boolean, boolean>;
-    readonlyFileName: z<string, string>;
-    maxReadOnlyEntries: z<number, number>;
-    maxGrants: z<number, number>;
-    allowWritableRequests: z<boolean, boolean>;
-  }>, Schemastery.ObjectT<{
-    mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access">;
-    workspaceRoot: z<string, string>;
-    readOnlyPaths: z<string[], string[]>;
-    writablePaths: z<string[], string[]>;
-    hardenBroker: z<boolean, boolean>;
-    readonlyFileName: z<string, string>;
-    maxReadOnlyEntries: z<number, number>;
-    maxGrants: z<number, number>;
-    allowWritableRequests: z<boolean, boolean>;
-  }>>;
-  private readonly baseEntries;
-  private readonly writableBaseEntries;
-  private readonly hardenBrokerBase;
-  private readonly readonlyFileNameBase;
-  private readonly maxReadOnlyEntriesBase;
-  private readonly maxGrantsBase;
-  private readonly allowRequestsBase;
+  private readonly config;
+  static Config: z<Schemastery.ObjectS<NoInfer<{
+    mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access", "defined">;
+    workspaceRoot: z<string, string, "plain">;
+    readOnlyPaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    writablePaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    patterns: z<string, string, "volatile">;
+    writablePatterns: z<string, string, "volatile">;
+    hardenBroker: z<boolean, boolean, "volatile-defined">;
+    readonlyFileName: z<string, string, "volatile-defined">;
+    maxReadOnlyEntries: z<number, number, "volatile-defined">;
+    maxGrants: z<number, number, "volatile-defined">;
+    allowWritableRequests: z<boolean, boolean, "volatile-defined">;
+  }>>, Schemastery.ObjectT<NoInfer<{
+    mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access", "defined">;
+    workspaceRoot: z<string, string, "plain">;
+    readOnlyPaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    writablePaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    patterns: z<string, string, "volatile">;
+    writablePatterns: z<string, string, "volatile">;
+    hardenBroker: z<boolean, boolean, "volatile-defined">;
+    readonlyFileName: z<string, string, "volatile-defined">;
+    maxReadOnlyEntries: z<number, number, "volatile-defined">;
+    maxGrants: z<number, number, "volatile-defined">;
+    allowWritableRequests: z<boolean, boolean, "volatile-defined">;
+  }>>, "plain">;
   private readonly readOnlyFiles;
   private readonly grants;
   /**
@@ -268,7 +270,6 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * 同一份 policy; 设置页预览也用它把授权记录对上是哪个工作区. 进程内存态.
    */
   private readonly sessionRoots;
-  private settingsOwner;
   private readOnlyCache;
   private readonly warned;
   constructor(ctx: Context, config: Config);

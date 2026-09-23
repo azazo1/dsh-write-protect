@@ -46,8 +46,12 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
    *   3. 本会话的保护旁路 (`writableOverrides`) —— 它要在保护路径之后才能把被
    *      授权的子树从只读里翻回来, 否则命令侧就永远看不到本会话的授权.
    */
-  override confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
-    const result = super.confine(argv, policy)
+  override async confine(
+    argv: readonly string[],
+    policy: SandboxPolicy,
+    signal?: AbortSignal,
+  ): Promise<ConfinedArgv> {
+    const result = await super.confine(argv, policy, signal)
 
     const runner = result.argv[0]
     const separator = result.argv.indexOf('--')

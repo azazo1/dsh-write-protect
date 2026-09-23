@@ -74,7 +74,7 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)',
     await ctx.plugin(LocalSandboxProvider, {})
     const sandbox = ctx.sandbox as LocalSandboxProvider
     sandbox.internals = { platform: 'darwin' }
-    return sandbox.confine(argv, policy).argv
+    return (await sandbox.confine(argv, policy)).argv
   }
 
   async function confine(policy: SandboxPolicy, argv: string[]): Promise<string[]> {
@@ -82,7 +82,7 @@ describe.skipIf(process.platform !== 'darwin')('Seatbelt 真实执法 (darwin)',
     await ctx.plugin(WriteProtectSandboxProvider, {})
     const sandbox = ctx.sandbox as WriteProtectSandboxProvider
     sandbox.internals = { platform: 'darwin' }
-    return sandbox.confine(argv, policy).argv
+    return (await sandbox.confine(argv, policy)).argv
   }
 
   function run(argv: string[]): { status: number | null; stderr: string } {

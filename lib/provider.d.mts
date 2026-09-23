@@ -16,7 +16,7 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    *   3. 本会话的保护旁路 (`writableOverrides`) —— 它要在保护路径之后才能把被
    *      授权的子树从只读里翻回来, 否则命令侧就永远看不到本会话的授权.
    */
-  confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv;
+  confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv>;
   /**
    * Seatbelt: 追加额外可写 allow, 保护路径 deny, 本会话旁路的 allow, 最后是
    * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`;

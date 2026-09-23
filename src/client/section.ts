@@ -13,20 +13,34 @@ import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READON
 import { WriteProtectPreviewPanel } from './preview-panel.ts'
 
 /** 组件对 settings scope 的最小结构视图 (避免耦合具体包的类型导出). */
+export interface WriteProtectValues {
+  readOnlyPaths?: string[]
+  writablePaths?: string[]
+  patterns?: string
+  writablePatterns?: string
+  hardenBroker?: boolean
+  readonlyFileName?: string
+  maxReadOnlyEntries?: number
+  maxGrants?: number
+  allowWritableRequests?: boolean
+}
+
 export interface WriteProtectScope {
   subscribe(listener: () => void): () => void
-  getSnapshot(): {
-    value?: {
-      patterns?: string
-      writablePatterns?: string
-      hardenBroker?: boolean
-      readonlyFileName?: string
-      maxReadOnlyEntries?: number
-      maxGrants?: number
-      allowWritableRequests?: boolean
-    }
-  }
+  getSnapshot(): { value?: WriteProtectValues }
   set(field: string, value: string | boolean | number): unknown
+}
+
+function patternsValueOf(value: WriteProtectValues | undefined): string {
+  if (value === undefined) return ''
+  const text = value.patterns
+  return typeof text === 'string' ? text : (value.readOnlyPaths ?? []).join('\n')
+}
+
+function writableValueOf(value: WriteProtectValues | undefined): string {
+  if (value === undefined) return ''
+  const text = value.writablePatterns
+  return typeof text === 'string' ? text : (value.writablePaths ?? []).join('\n')
 }
 
 /** 客户端注入的 React runtime 形状 (module loader 的预载模块). */
@@ -100,11 +114,11 @@ export function WriteProtectSection(
   const { createElement, useState, useSyncExternalStore } = React
   const savedPatterns = useSyncExternalStore(
     listener => scope.subscribe(listener),
-    () => scope.getSnapshot().value?.patterns ?? '',
+    () => patternsValueOf(scope.getSnapshot().value),
   )
   const savedWritable = useSyncExternalStore(
     listener => scope.subscribe(listener),
-    () => scope.getSnapshot().value?.writablePatterns ?? '',
+    () => writableValueOf(scope.getSnapshot().value),
   )
   const savedHarden = useSyncExternalStore(
     listener => scope.subscribe(listener),

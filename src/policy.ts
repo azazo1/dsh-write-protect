@@ -17,13 +17,12 @@
  * @module dsh-write-protect/policy
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import { resolve as resolvePath } from 'node:path'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import {
   ALLOW_REQUESTS_FIELD,
@@ -67,7 +66,7 @@ export interface Config {
    * `//` 开头为文件系统绝对路径; `!` 按 last-match-wins 取反.
    * 用户在 Web 设置页保存过 patterns 文本后该数组不再生效.
    */
-  readOnlyPaths?: string[]
+  readOnlyPaths?: string[] | Volatile<string[]>
   /**
    * 额外可写根部署 base: 每项一行字面路径, 数组逐行合并为生效文本.
    * 行首 `~` / `~/...` 为当前用户家目录, `$NAME` / `${NAME}` 为环境变量;
@@ -75,35 +74,47 @@ export interface Config {
    * 只在 `workspace-write` 下并进 allow-list, 不打穿 `read-only`;
    * 保护路径优先. 用户保存过 writablePatterns 文本后该数组不再生效.
    */
-  writablePaths?: string[]
+  writablePaths?: string[] | Volatile<string[]>
   /**
    * macOS Seatbelt broker 逃逸加固的部署 base, 缺省开启 (见
    * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
    */
-  hardenBroker?: boolean
+  hardenBroker?: boolean | Volatile<boolean>
   /**
    * 工作区只读规则文件名部署 base, 缺省 `.readonly` (见
    * `DEFAULT_READONLY_FILE_NAME`): 工作区根下的这份文件按 gitignore 语义解析,
    * 逐行追加在设置页文本之后; 空串表示关闭该识别. 用户保存过
    * `readonlyFileName` 后该值不再生效.
    */
-  readonlyFileName?: string
+  readonlyFileName?: string | Volatile<string>
   /**
    * 规则文件条目数上限部署 base, 缺省 200: 超出的条目丢弃并告警.
    * 用户保存过 `maxReadOnlyEntries` 后该值不再生效.
    */
-  maxReadOnlyEntries?: number
+  maxReadOnlyEntries?: number | Volatile<number>
   /**
    * 单会话可写授权条数上限部署 base, 缺省 8 (见 `DEFAULT_MAX_GRANTS`).
    * 用户保存过 `maxGrants` 后该值不再生效.
    */
-  maxGrants?: number
+  maxGrants?: number | Volatile<number>
   /**
    * 是否允许模型申请可写路径的部署 base, 缺省开启 (见
    * `DEFAULT_ALLOW_REQUESTS`). 关掉后 `request_writable_path` 的任何调用都被
    * 拒绝, 提示词也不再引导模型去申请; 用户保存过该字段后此值不再生效.
    */
-  allowWritableRequests?: boolean
+  allowWritableRequests?: boolean | Volatile<boolean>
+  /** 用户保存的保护路径多行文本; 缺省回退 readOnlyPaths. */
+  patterns?: string | Volatile<string>
+  /** 用户保存的额外可写根多行文本; 缺省回退 writablePaths. */
+  writablePatterns?: string | Volatile<string>
+}
+
+function currentConfigValue<T>(value: T | Volatile<T> | undefined, fallback: T): T {
+  if (value === undefined) return fallback
+  const current = typeof value === 'object' && value !== null && 'get' in value
+    ? (value as Volatile<T>).get() as T | undefined
+    : value
+  return current === undefined ? fallback : current
 }
 
 /** 展开结果的缓存有效时长: resolve 每个 tool call 都会调用, glob 枚举有 IO 成本. */
@@ -132,22 +143,17 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   static Config = z.object({
     mode: z.union(['read-only', 'workspace-write', 'danger-full-access'] as const).default('read-only'),
     workspaceRoot: z.string(),
-    readOnlyPaths: z.array(z.string()).default([...DEFAULT_READ_ONLY_PATHS]),
-    writablePaths: z.array(z.string()).default([...DEFAULT_WRITABLE_PATHS]),
-    hardenBroker: z.boolean().default(DEFAULT_HARDEN_BROKER),
-    readonlyFileName: z.string().default(DEFAULT_READONLY_FILE_NAME),
-    maxReadOnlyEntries: z.number().default(DEFAULT_MAX_READONLY_ENTRIES),
-    maxGrants: z.number().default(DEFAULT_MAX_GRANTS),
-    allowWritableRequests: z.boolean().default(DEFAULT_ALLOW_REQUESTS),
+    readOnlyPaths: z.array(z.string()).default([...DEFAULT_READ_ONLY_PATHS]).volatile(),
+    writablePaths: z.array(z.string()).default([...DEFAULT_WRITABLE_PATHS]).volatile(),
+    patterns: z.string().volatile(),
+    writablePatterns: z.string().volatile(),
+    hardenBroker: z.boolean().default(DEFAULT_HARDEN_BROKER).volatile(),
+    readonlyFileName: z.string().default(DEFAULT_READONLY_FILE_NAME).volatile(),
+    maxReadOnlyEntries: z.number().default(DEFAULT_MAX_READONLY_ENTRIES).volatile(),
+    maxGrants: z.number().default(DEFAULT_MAX_GRANTS).volatile(),
+    allowWritableRequests: z.boolean().default(DEFAULT_ALLOW_REQUESTS).volatile(),
   })
 
-  private readonly baseEntries: readonly string[]
-  private readonly writableBaseEntries: readonly string[]
-  private readonly hardenBrokerBase: boolean
-  private readonly readonlyFileNameBase: string
-  private readonly maxReadOnlyEntriesBase: number
-  private readonly maxGrantsBase: number
-  private readonly allowRequestsBase: boolean
   private readonly readOnlyFiles: ReadOnlyFileCache
   private readonly grants: GrantsService
   /**
@@ -156,7 +162,6 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
    * 同一份 policy; 设置页预览也用它把授权记录对上是哪个工作区. 进程内存态.
    */
   private readonly sessionRoots = new Map<string, string>()
-  private settingsOwner: SettingsScope<WriteProtectSettings> | undefined
   private readOnlyCache: {
     at: number
     key: string
@@ -174,10 +179,10 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   }
   private readonly warned = new Set<string>()
 
-  constructor(ctx: Context, config: Config) {
+  constructor(ctx: Context, private readonly config: Config) {
     super(ctx, config)
-    const entries = config.readOnlyPaths ?? []
-    const writableEntries = config.writablePaths ?? []
+    const entries = currentConfigValue(config.readOnlyPaths, [...DEFAULT_READ_ONLY_PATHS])
+    const writableEntries = currentConfigValue(config.writablePaths, [...DEFAULT_WRITABLE_PATHS])
     for (const entry of entries) {
       if (entry.trim().length === 0) {
         throw new Error('dsh-write-protect: readOnlyPaths entries must be non-empty strings')
@@ -188,15 +193,8 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
         throw new Error('dsh-write-protect: writablePaths entries must be non-empty strings')
       }
     }
-    this.baseEntries = entries
-    this.writableBaseEntries = writableEntries
-    this.hardenBrokerBase = config.hardenBroker ?? DEFAULT_HARDEN_BROKER
-    this.readonlyFileNameBase = this.warnAboutFileName(config.readonlyFileName ?? DEFAULT_READONLY_FILE_NAME)
-    this.maxReadOnlyEntriesBase = this.positiveLimit(config.maxReadOnlyEntries, DEFAULT_MAX_READONLY_ENTRIES, 'maxReadOnlyEntries')
-    this.maxGrantsBase = this.positiveLimit(config.maxGrants, DEFAULT_MAX_GRANTS, 'maxGrants')
-    this.allowRequestsBase = config.allowWritableRequests ?? DEFAULT_ALLOW_REQUESTS
     this.readOnlyFiles = new ReadOnlyFileCache(
-      this.maxReadOnlyEntriesBase,
+      DEFAULT_MAX_READONLY_ENTRIES,
       message => this.warn(message),
     )
     // 授权只在内存中追加到对应会话记录, 不改变只读规则, 不作废只读展开缓存.
@@ -204,24 +202,6 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       () => this.currentLimits().maxGrants,
       () => {},
     )
-
-    // Web 设置页的持久化配置: composition base 是 patch 的数组与开关, 用户保存过
-    // 的值覆盖对应字段; 编辑后缓存失效实时生效.
-    ctx.inject(['settings'], (scope: Context) => {
-      const owner = scope.settings.register(PLUGIN_ID, WriteProtectSettingsSchema, {
-        base: {
-          [PATTERNS_FIELD]: this.baseText(),
-          [WRITABLE_FIELD]: this.writableBaseText(),
-          [HARDEN_BROKER_FIELD]: this.hardenBrokerBase,
-          [READONLY_FILE_FIELD]: this.readonlyFileNameBase,
-          [MAX_READONLY_ENTRIES_FIELD]: this.maxReadOnlyEntriesBase,
-          [MAX_GRANTS_FIELD]: this.maxGrantsBase,
-          [ALLOW_REQUESTS_FIELD]: this.allowRequestsBase,
-        },
-      })
-      this.settingsOwner = owner
-      owner.watch(() => this.invalidate())
-    })
 
     ctx.inject(['systemPrompt'], (scope: Context) => {
       scope.systemPrompt.context({
@@ -288,30 +268,27 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
 
   /** 部署 base 的保护路径文本形态 (patch 数组逐行合并). */
   private baseText(): string {
-    return this.baseEntries.join('\n')
+    return currentConfigValue(this.config.readOnlyPaths, [...DEFAULT_READ_ONLY_PATHS]).join('\n')
   }
 
   /** 部署 base 的额外可写根文本形态 (patch 数组逐行合并). */
   private writableBaseText(): string {
-    return this.writableBaseEntries.join('\n')
+    return currentConfigValue(this.config.writablePaths, [...DEFAULT_WRITABLE_PATHS]).join('\n')
   }
 
   /** 当前生效的保护路径文本: 用户在设置页保存过的 patterns 覆盖部署 base. */
   private currentText(): string {
-    const value = this.settingsOwner?.get()?.[PATTERNS_FIELD]
-    return typeof value === 'string' ? value : this.baseText()
+    return currentConfigValue(this.config.patterns, this.baseText())
   }
 
   /** 当前生效的额外可写文本: 用户保存过的 writablePatterns 覆盖部署 base. */
   private currentWritableText(): string {
-    const value = this.settingsOwner?.get()?.[WRITABLE_FIELD]
-    return typeof value === 'string' ? value : this.writableBaseText()
+    return currentConfigValue(this.config.writablePatterns, this.writableBaseText())
   }
 
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker(): boolean {
-    const value = this.settingsOwner?.get()?.[HARDEN_BROKER_FIELD]
-    return typeof value === 'boolean' ? value : this.hardenBrokerBase
+    return currentConfigValue(this.config.hardenBroker, DEFAULT_HARDEN_BROKER)
   }
 
   /** 当前生效的规则文件名 (空串即关闭识别). */
@@ -374,16 +351,11 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
 
   /** 当前生效的规则文件条目上限, 会话授权上限与可写申请开关. */
   private currentLimits(): ResolvedConfigValues {
-    const section = this.settingsOwner?.get()
-    const fileName = section?.[READONLY_FILE_FIELD]
-    const maxEntries = section?.[MAX_READONLY_ENTRIES_FIELD]
-    const maxGrants = section?.[MAX_GRANTS_FIELD]
-    const allowRequests = section?.[ALLOW_REQUESTS_FIELD]
     return {
-      readonlyFileName: this.warnAboutFileName(typeof fileName === 'string' ? fileName : this.readonlyFileNameBase),
-      maxReadOnlyEntries: this.positiveLimit(typeof maxEntries === 'number' ? maxEntries : this.maxReadOnlyEntriesBase, DEFAULT_MAX_READONLY_ENTRIES, 'maxReadOnlyEntries'),
-      maxGrants: this.positiveLimit(typeof maxGrants === 'number' ? maxGrants : this.maxGrantsBase, DEFAULT_MAX_GRANTS, 'maxGrants'),
-      allowWritableRequests: typeof allowRequests === 'boolean' ? allowRequests : this.allowRequestsBase,
+      readonlyFileName: this.warnAboutFileName(currentConfigValue(this.config.readonlyFileName, DEFAULT_READONLY_FILE_NAME)),
+      maxReadOnlyEntries: this.positiveLimit(currentConfigValue(this.config.maxReadOnlyEntries, DEFAULT_MAX_READONLY_ENTRIES), DEFAULT_MAX_READONLY_ENTRIES, 'maxReadOnlyEntries'),
+      maxGrants: this.positiveLimit(currentConfigValue(this.config.maxGrants, DEFAULT_MAX_GRANTS), DEFAULT_MAX_GRANTS, 'maxGrants'),
+      allowWritableRequests: currentConfigValue(this.config.allowWritableRequests, DEFAULT_ALLOW_REQUESTS),
     }
   }
 

@@ -55,7 +55,7 @@ afterAll(() => {
 describe('WriteProtectSandboxProvider.confine', () => {
   it('bwrap: 在 -- 之前插入 ro-bind 对, 位于可写 bind 之后', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
+    const result = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
     const separator = result.argv.indexOf('--')
     expect(separator).toBeGreaterThan(-1)
     // 插入点紧邻 -- 之前: 官方 profile 自带的 `--ro-bind / /` 在更早的位置,
@@ -71,14 +71,14 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('bwrap: 宿主上不存在的保护路径被跳过, argv 其余部分不变', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww('/ws', []))
-    const result = sandbox.confine(['true'], ww('/ws', ['/definitely-missing-dsh-wp']))
+    const baseline = await sandbox.confine(['true'], ww('/ws', []))
+    const result = await sandbox.confine(['true'], ww('/ws', ['/definitely-missing-dsh-wp']))
     expect(result.argv).toEqual(baseline.argv)
   })
 
   it('Seatbelt: 在 -p profile 文本末尾追加 deny 形式, 官方形式保留', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const result = sandbox.confine(['true'], ww('/ws', ['/ws/gitdir']))
+    const result = await sandbox.confine(['true'], ww('/ws', ['/ws/gitdir']))
     expect(result.argv[0]).toBe('sandbox-exec')
     const profileIndex = result.argv.indexOf('-p')
     const profile = result.argv[profileIndex + 1]!
@@ -92,16 +92,16 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('Seatbelt: 多个保护路径合并进同一条 deny 形式', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const result = sandbox.confine(['true'], ww('/ws', ['/ws/gitdir', '/ws/dist']))
+    const result = await sandbox.confine(['true'], ww('/ws', ['/ws/gitdir', '/ws/dist']))
     const profile = result.argv[result.argv.indexOf('-p') + 1]
     expect(profile).toContain('(subpath "/ws/gitdir") (subpath "/ws/dist")')
   })
 
   it('read-only 模式不叠加保护路径与额外可写根, 但同样追加 broker 加固', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const baseline = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
-    const protectedOnly = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', readOnlyPaths: ['/ws/gitdir'] })
-    const withExtra = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writablePaths: ['/extra'] })
+    const baseline = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
+    const protectedOnly = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', readOnlyPaths: ['/ws/gitdir'] })
+    const withExtra = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writablePaths: ['/extra'] })
     expect(protectedOnly.argv).toEqual(baseline.argv)
     expect(withExtra.argv).toEqual(baseline.argv)
     const profile = baseline.argv[baseline.argv.indexOf('-p') + 1]!
@@ -112,15 +112,15 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('空保护列表直接短路', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww('/ws', []))
-    const result = sandbox.confine(['true'], { mode: 'workspace-write', workspaceRoot: '/ws', readOnlyPaths: [] })
+    const baseline = await sandbox.confine(['true'], ww('/ws', []))
+    const result = await sandbox.confine(['true'], { mode: 'workspace-write', workspaceRoot: '/ws', readOnlyPaths: [] })
     expect(result.argv).toEqual(baseline.argv)
   })
 
   it('Landlock 无法表达子路径例外: argv 保持官方结果', async () => {
     const sandbox = await setup({}, LANDLOCK_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww('/ws', []))
-    const result = sandbox.confine(['true'], ww('/ws', ['/ws/gitdir']))
+    const baseline = await sandbox.confine(['true'], ww('/ws', []))
+    const result = await sandbox.confine(['true'], ww('/ws', ['/ws/gitdir']))
     expect(result.argv).toEqual(baseline.argv)
   })
 
@@ -129,7 +129,7 @@ describe('WriteProtectSandboxProvider.confine', () => {
       { runnerCommand: ['my-bwrap-runner'], runnerFailureSignatures: ['my-bwrap-runner:'] },
       {},
     )
-    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
+    const result = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
     expect(result.argv[0]).toBe('my-bwrap-runner')
     const separator = result.argv.indexOf('--')
     expect(separator).toBeGreaterThan(-1)
@@ -139,12 +139,12 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('无配置时与官方 provider 行为一致 (内部探测照常)', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    expect(sandbox.confine(['true'], ww('/ws', [])).argv[0]).toBe('bwrap')
+    expect((await sandbox.confine(['true'], ww('/ws', []))).argv[0]).toBe('bwrap')
   })
 
   it('bwrap: 额外可写 bind 插在保护路径 ro-bind 之前', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [realExtra]))
+    const result = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [realExtra]))
     const separator = result.argv.indexOf('--')
     expect(result.argv.slice(separator - 3, separator)).toEqual(['--ro-bind', join(realWs, 'gitdir'), join(realWs, 'gitdir')])
     const extraBind = result.argv.lastIndexOf('--bind')
@@ -154,14 +154,14 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('bwrap: 宿主上不存在的额外可写根被跳过', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww(realWs, []))
-    const result = sandbox.confine(['true'], ww(realWs, [], ['/definitely-missing-dsh-wp-extra']))
+    const baseline = await sandbox.confine(['true'], ww(realWs, []))
+    const result = await sandbox.confine(['true'], ww(realWs, [], ['/definitely-missing-dsh-wp-extra']))
     expect(result.argv).toEqual(baseline.argv)
   })
 
   it('Seatbelt: 额外可写 allow 出现在保护 deny 之前', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const result = sandbox.confine(['true'], ww('/ws', ['/ws/gitdir'], ['/extra']))
+    const result = await sandbox.confine(['true'], ww('/ws', ['/ws/gitdir'], ['/extra']))
     const profile = result.argv[result.argv.indexOf('-p') + 1]!
     expect(profile).toContain('(allow file-write* (subpath "/extra"))')
     expect(profile).toContain('(deny file-write* (subpath "/ws/gitdir"))')
@@ -171,10 +171,10 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('Landlock: 额外可写根加 --rw, 保护路径仍不叠加', async () => {
     const sandbox = await setup({}, LANDLOCK_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww(realWs, []))
-    const protectedOnly = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
+    const baseline = await sandbox.confine(['true'], ww(realWs, []))
+    const protectedOnly = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))
     expect(protectedOnly.argv).toEqual(baseline.argv)
-    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [realExtra]))
+    const result = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [realExtra]))
     const separator = result.argv.indexOf('--')
     const extraAt = result.argv.indexOf(realExtra)
     expect(extraAt).toBeGreaterThan(-1)
@@ -184,14 +184,14 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('非 Seatbelt runner 不追加 broker 加固', async () => {
     const bwrapSandbox = await setup({}, BWRAP_INTERNALS)
-    expect(bwrapSandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')])).argv.join(' ')).not.toContain('appleevent-send')
+    expect((await bwrapSandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))).argv.join(' ')).not.toContain('appleevent-send')
     const landlockSandbox = await setup({}, LANDLOCK_INTERNALS)
-    expect(landlockSandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')])).argv.join(' ')).not.toContain('appleevent-send')
+    expect((await landlockSandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')]))).argv.join(' ')).not.toContain('appleevent-send')
   })
 
   it('Seatbelt: hardenBroker 为 false 时只跳过 broker 加固, 保护路径仍生效', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const result = sandbox.confine(['true'], { ...ww('/ws', ['/ws/gitdir']), hardenBroker: false })
+    const result = await sandbox.confine(['true'], { ...ww('/ws', ['/ws/gitdir']), hardenBroker: false })
     const profile = result.argv[result.argv.indexOf('-p') + 1]!
     expect(profile).toContain('(deny file-write* (subpath "/ws/gitdir"))')
     expect(profile).not.toContain('appleevent-send')
@@ -201,7 +201,7 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('Seatbelt: hardenBroker 为 false 的 read-only profile 保持官方形态', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const result = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', hardenBroker: false })
+    const result = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', hardenBroker: false })
     const profile = result.argv[result.argv.indexOf('-p') + 1]!
     expect(profile).toContain('(allow default)')
     expect(profile).toContain('(deny file-write*)')
@@ -211,13 +211,13 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('Seatbelt: hardenBroker 未声明时按开启处理', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const argv = sandbox.confine(['true'], ww('/ws', [])).argv
+    const argv = (await sandbox.confine(['true'], ww('/ws', []))).argv
     expect(argv[argv.indexOf('-p') + 1]).toContain('(deny appleevent-send)')
   })
 
   it('Seatbelt: 本会话旁路的 allow 排在保护 deny 之后', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const result = sandbox.confine(['true'], ww('/ws', ['/ws/granted'], [], ['/ws/granted/inner']))
+    const result = await sandbox.confine(['true'], ww('/ws', ['/ws/granted'], [], ['/ws/granted/inner']))
     const profile = result.argv[result.argv.indexOf('-p') + 1]!
     const denyAt = profile.lastIndexOf('(deny file-write* (subpath "/ws/granted"))')
     const allowAt = profile.lastIndexOf('(allow file-write* (subpath "/ws/granted/inner"))')
@@ -232,7 +232,7 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const granted = join(realWs, 'granted')
     const inner = join(granted, 'inner')
     mkdirSync(inner, { recursive: true })
-    const result = sandbox.confine(['true'], ww(realWs, [granted], [], [inner]))
+    const result = await sandbox.confine(['true'], ww(realWs, [granted], [], [inner]))
     const separator = result.argv.indexOf('--')
     const roBind = result.argv.lastIndexOf('--ro-bind')
     const overrideBind = result.argv.indexOf(inner)
@@ -244,22 +244,22 @@ describe('WriteProtectSandboxProvider.confine', () => {
 
   it('bwrap: 不存在的旁路路径跳过 (命令侧等它出现)', async () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww(realWs, []))
-    const result = sandbox.confine(['true'], ww(realWs, [], [], ['/definitely-missing-dsh-wp-grant']))
+    const baseline = await sandbox.confine(['true'], ww(realWs, []))
+    const result = await sandbox.confine(['true'], ww(realWs, [], [], ['/definitely-missing-dsh-wp-grant']))
     expect(result.argv).toEqual(baseline.argv)
   })
 
   it('Landlock: 旁路不叠加 (纯 allow-list 无法表达子路径例外)', async () => {
     const sandbox = await setup({}, LANDLOCK_INTERNALS)
-    const baseline = sandbox.confine(['true'], ww(realWs, []))
-    const result = sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [], [join(realWs, 'gitdir')]))
+    const baseline = await sandbox.confine(['true'], ww(realWs, []))
+    const result = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [], [join(realWs, 'gitdir')]))
     expect(result.argv).toEqual(baseline.argv)
   })
 
   it('read-only 模式下旁路同样不叠加', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
-    const baseline = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
-    const withOverride = sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writableOverrides: ['/ws/gitdir'] })
+    const baseline = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
+    const withOverride = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writableOverrides: ['/ws/gitdir'] })
     expect(withOverride.argv).toEqual(baseline.argv)
   })
 })
