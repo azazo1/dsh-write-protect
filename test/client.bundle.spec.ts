@@ -96,12 +96,10 @@ describe('client bundle loader 注册', () => {
     for (const id of requested) {
       expect(PLATFORM_MODULES.has(id)).toBe(true)
     }
-    // 界面逻辑与文案应打包进产物 (纯内联).
-    expect(code).toContain('保护路径')
-    expect(code).toContain('额外可写根')
-    expect(code).toContain('监视被保护路径')
-    expect(code).toContain('预览')
-    expect(code).toContain('未生效')
-    expect(code).toContain('workspaceRoot')
+    // 界面逻辑与常量应打包进产物 (纯内联). 用配置条目 id, 槽位名与预览路由这类稳定标识断言,
+    // 不绑界面文案: 文案会随措辞调整, 断言跟着挂掉时并不能说明内联坏了.
+    expect(code).toContain('dsh-write-protect-policy')
+    expect(code).toContain('plugins.bundle.config')
+    expect(code).toContain('/api/dsh-write-protect.preview')
   })
 })
