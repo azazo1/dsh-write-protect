@@ -28,6 +28,15 @@ export const MAX_GRANTS_FIELD = 'maxGrants'
 /** settings namespace 的"是否允许模型申请可写路径"开关字段名. */
 export const ALLOW_REQUESTS_FIELD = 'allowWritableRequests'
 
+/** settings namespace 的"是否监听工作区变化"开关字段名. */
+export const WATCH_FIELD = 'watchProtectedPaths'
+
+/** settings namespace 的自适应刷新下界字段名 (毫秒). */
+export const WATCH_TTL_MIN_FIELD = 'watchTtlMinMs'
+
+/** settings namespace 的自适应刷新上界字段名 (毫秒). */
+export const WATCH_TTL_MAX_FIELD = 'watchTtlMaxMs'
+
 /**
  * macOS broker 逃逸加固的默认值: 开启. 官方 profile 的 `(allow default)`
  * 让沙箱内一条 `open x.app` 就能经 launchd 在沙箱外执行, 属于应当默认堵上的
@@ -73,6 +82,24 @@ export const DEFAULT_MAX_GRANTS = 8
  * 关掉后工具仍然可见但任何调用都会被拒 (提示词也不再引导模型去申请).
  */
 export const DEFAULT_ALLOW_REQUESTS = true
+
+/**
+ * 是否监听工作区变化的默认值: 开启. 只给正在运行 agent 的会话的工作区根装
+ * 递归 watcher, 变化后立即在后台重扫展开清单, 让命令侧 (bwrap 只读挂载) 也能
+ * 保护会话中途才出现的受保护路径. 关掉后不装 watcher, 只剩自适应 TTL 兜底.
+ */
+export const DEFAULT_WATCH_PROTECTED_PATHS = true
+
+/**
+ * 自适应刷新时长的下界: 上次展开耗时乘倍率后不低于它, 避免小工作区上频繁重扫.
+ */
+export const DEFAULT_WATCH_TTL_MIN_MS = 2_000
+
+/**
+ * 自适应刷新时长的上界: 上次展开耗时乘倍率后不高于它, 保证 watcher 漏事件时
+ * 结果也不会长时间陈旧.
+ */
+export const DEFAULT_WATCH_TTL_MAX_MS = 30_000
 
 /**
  * 规则文件名的禁用值: 这些名字本身是配置或版本库元数据, 允许模型申请可写

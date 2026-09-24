@@ -15,7 +15,7 @@
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WRITABLE_FIELD } from '../constants.ts'
+import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD, WRITABLE_FIELD } from '../constants.ts'
 import { mountWriteProtectSection, type WriteProtectScope } from './section.ts'
 import { sessionCwdOf, type SessionsLike } from './session-cwd.ts'
 
@@ -35,6 +35,9 @@ export interface WriteProtectSettings {
   maxReadOnlyEntries?: number
   maxGrants?: number
   allowWritableRequests?: boolean
+  watchProtectedPaths?: boolean
+  watchTtlMinMs?: number
+  watchTtlMaxMs?: number
 }
 
 /** 未知 section 结构到类型化配置的解码; 异常结构回退 undefined (走 base 展示). */
@@ -50,6 +53,9 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   const maxReadOnlyEntries = record[MAX_READONLY_ENTRIES_FIELD]
   const maxGrants = record[MAX_GRANTS_FIELD]
   const allowRequests = record[ALLOW_REQUESTS_FIELD]
+  const watch = record[WATCH_FIELD]
+  const watchTtlMin = record[WATCH_TTL_MIN_FIELD]
+  const watchTtlMax = record[WATCH_TTL_MAX_FIELD]
   const decoded: WriteProtectSettings = {}
   if (Array.isArray(readOnlyPaths) && readOnlyPaths.every(item => typeof item === 'string')) {
     decoded.readOnlyPaths = readOnlyPaths
@@ -64,10 +70,14 @@ export function decodeWriteProtectSettings(section: unknown): WriteProtectSettin
   if (typeof maxReadOnlyEntries === 'number') decoded.maxReadOnlyEntries = maxReadOnlyEntries
   if (typeof maxGrants === 'number') decoded.maxGrants = maxGrants
   if (typeof allowRequests === 'boolean') decoded.allowWritableRequests = allowRequests
+  if (typeof watch === 'boolean') decoded.watchProtectedPaths = watch
+  if (typeof watchTtlMin === 'number') decoded.watchTtlMinMs = watchTtlMin
+  if (typeof watchTtlMax === 'number') decoded.watchTtlMaxMs = watchTtlMax
   const empty = decoded.readOnlyPaths === undefined && decoded.writablePaths === undefined
     && decoded.patterns === undefined && decoded.writablePatterns === undefined && decoded.hardenBroker === undefined
     && decoded.readonlyFileName === undefined && decoded.maxReadOnlyEntries === undefined && decoded.maxGrants === undefined
-    && decoded.allowWritableRequests === undefined
+    && decoded.allowWritableRequests === undefined && decoded.watchProtectedPaths === undefined
+    && decoded.watchTtlMinMs === undefined && decoded.watchTtlMaxMs === undefined
   return empty ? undefined : decoded
 }
 

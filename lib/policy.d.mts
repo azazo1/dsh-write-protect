@@ -69,6 +69,28 @@ declare class ReadOnlyFileCache {
   private report;
 }
 //#endregion
+//#region src/refresh.d.ts
+/**
+ * 保护路径展开结果的保鲜: 给正在运行的会话的工作区根装递归 watcher, watcher 一报
+ * 变化就立刻在后台重扫; 没有事件时用自适应 TTL 兜底.
+ *
+ * 为什么需要它: 命令侧 (bwrap 的只读挂载) 只能消费真实路径, 所以展开清单是命令侧
+ * 保护的唯一来源; 会话中途才出现的受保护路径 (例如 `git init` 出来的 `.git`) 若不
+ * 在清单里, 那条命令就写得进去. watcher 负责"变化之后尽快重算", TTL 负责"watcher
+ * 漏事件时也不会一直陈旧".
+ *
+ * 生命周期跟着 agent 运行状态走: 运行时装 watcher, 运行结束或会话销毁时摘掉, 空闲
+ * 不占资源. 工作区根只接受本地路径 —— 调用方取不到本地可监听路径时直接不装 watcher,
+ * 退化成纯 TTL.
+ * @module dsh-write-protect/refresh
+ */
+/** 一次展开的结果. */
+interface ExpansionSnapshot {
+  readonly readOnly: readonly string[];
+  readonly writable: readonly string[];
+  readonly patterns: string;
+}
+//#endregion
 //#region src/constants.d.ts
 /** 一次可写授权的性质. */
 type GrantKind = 'extra-root' | 'override';
@@ -210,16 +232,26 @@ export interface Config {
    * 拒绝, 提示词也不再引导模型去申请; 用户保存过该字段后此值不再生效.
    */
   allowWritableRequests?: boolean | Volatile<boolean>;
+  /**
+   * 是否监听工作区变化 (命令侧展开清单的保鲜), 缺省开启 (见
+   * `DEFAULT_WATCH_PROTECTED_PATHS`). 开启时只给正在运行 agent 的会话的工作区根
+   * 装递归 watcher, 变化后立即后台重扫; 关掉后不装 watcher, 只剩自适应 TTL.
+   */
+  watchProtectedPaths?: boolean | Volatile<boolean>;
+  /**
+   * 自适应刷新时长的下界 (毫秒), 缺省 2000 (见 `DEFAULT_WATCH_TTL_MIN_MS`).
+   * 上次展开耗时乘 10 后不低于它.
+   */
+  watchTtlMinMs?: number | Volatile<number>;
+  /**
+   * 自适应刷新时长的上界 (毫秒), 缺省 30000 (见 `DEFAULT_WATCH_TTL_MAX_MS`).
+   * 上次展开耗时乘 10 后不高于它, 也是 watcher 失效时的兜底刷新间隔.
+   */
+  watchTtlMaxMs?: number | Volatile<number>;
   /** 用户保存的保护路径多行文本; 缺省回退 readOnlyPaths. */
   patterns?: string | Volatile<string>;
   /** 用户保存的额外可写根多行文本; 缺省回退 writablePaths. */
   writablePatterns?: string | Volatile<string>;
-}
-/** 一次枚举得到的保护路径, 额外可写根, 以及当时生效的保护路径原文. */
-export interface PathSnapshot {
-  readonly readOnly: readonly string[];
-  readonly writable: readonly string[];
-  readonly patterns: string;
 }
 /** 一次同步解析得到的生效文本, 本会话授权与缓存里已有的枚举清单. */
 export interface PolicySnapshot {
@@ -234,6 +266,9 @@ export interface ResolvedConfigValues {
   readonly maxReadOnlyEntries: number;
   readonly maxGrants: number;
   readonly allowWritableRequests: boolean;
+  readonly watchProtectedPaths: boolean;
+  readonly watchTtlMinMs: number;
+  readonly watchTtlMaxMs: number;
 }
 export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private readonly config;
@@ -249,6 +284,9 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     maxReadOnlyEntries: z<number, number, "volatile-defined">;
     maxGrants: z<number, number, "volatile-defined">;
     allowWritableRequests: z<boolean, boolean, "volatile-defined">;
+    watchProtectedPaths: z<boolean, boolean, "volatile-defined">;
+    watchTtlMinMs: z<number, number, "volatile-defined">;
+    watchTtlMaxMs: z<number, number, "volatile-defined">;
   }>>, Schemastery.ObjectT<NoInfer<{
     mode: z<"read-only" | "workspace-write" | "danger-full-access", "read-only" | "workspace-write" | "danger-full-access", "defined">;
     workspaceRoot: z<string, string, "plain">;
@@ -261,6 +299,9 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     maxReadOnlyEntries: z<number, number, "volatile-defined">;
     maxGrants: z<number, number, "volatile-defined">;
     allowWritableRequests: z<boolean, boolean, "volatile-defined">;
+    watchProtectedPaths: z<boolean, boolean, "volatile-defined">;
+    watchTtlMinMs: z<number, number, "volatile-defined">;
+    watchTtlMaxMs: z<number, number, "volatile-defined">;
   }>>, "plain">;
   private readonly readOnlyFiles;
   private readonly grants;
@@ -270,10 +311,15 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * 同一份 policy; 设置页预览也用它把授权记录对上是哪个工作区. 进程内存态.
    */
   private readonly sessionRoots;
-  /** 单槽展开缓存: 键是 (保护文本, 可写文本, 工作区根), 任一变化即失效. */
-  private cache;
+  /**
+   * 正在运行 agent 的会话: 会话 id -> 工作区根. watcher 只服务这批会话, 因此这里
+   * 按会话 id 记账 (而不是按根计数), 这样 "status 转 idle" 与 "会话销毁" 两条路径
+   * 重复触发也不会把计数弄错.
+   */
+  private readonly runningSessions;
+  /** 展开结果的保鲜: watcher + 自适应 TTL, 见 refresh.ts. */
+  private readonly refresher;
   private readonly warned;
-  private inflight;
   constructor(ctx: Context, config: Config);
   /** 部署 base 的保护路径文本形态 (patch 数组逐行合并). */
   private baseText;
@@ -295,13 +341,29 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * @param workspaceRoot - 会话工作区根.
    * @returns 展开后的保护路径, 额外可写根与当时的保护路径原文.
    */
-  materialize(workspaceRoot: string): Promise<PathSnapshot>;
-  /** 展开缓存的键: 两份文本与工作区根都参与. */
-  private cacheKey;
-  /** 缓存命中且未过期时返回快照, 否则 undefined. */
-  private peek;
-  /** 真正执行一次展开, 按 key 写入缓存, 并把各条告警去重后写日志. */
+  materialize(workspaceRoot: string): Promise<ExpansionSnapshot>;
+  /**
+   * 一次展开的输入: 生效保护文本 (设置页文本与规则文件合并) 与额外可写文本, 以及
+   * 由这两份文本组成的缓存键. 文本变过就一定要重新展开.
+   */
+  private expansionInputs;
+  /** 真正执行一次展开, 并把各条告警去重后写日志. */
   private expandNow;
+  /**
+   * 记录 / 撤销一个"正在运行 agent 的会话". watcher 只装给这批会话的工作区根:
+   * 开始运行时装上, 运行结束 (或会话销毁) 时摘掉. 同一个根被多个会话共用时按会话
+   * 计数, 最后一个会话结束后才摘.
+   * @param session - 事件里的会话 (只需要 id 与 header.cwd).
+   * @param running - 是否正在运行.
+   */
+  private setSessionRunning;
+  /**
+   * 会话的本地工作区根 (canonical), 取不到可监听的本地路径时返回 undefined.
+   *
+   * 今天 dsh 的会话只有本地 cwd 一种形态; 将来出现远端会话时, 这里会拿不到本地
+   * 路径 (或拿到远端路径), 于是自然退化成"不装 watcher, 只用 TTL".
+   */
+  private localWorkspaceRootOf;
   /** 展开额外可写根文本 (纯字面路径, 不扫盘) 并把告警去重后写日志. */
   private expandWritable;
   /**
@@ -350,7 +412,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * @returns 命中的模式原文, 未命中为 undefined.
    */
   protectedPatternFor(sessionId: string | undefined, cwd: string | undefined, target: string): string | undefined;
-  /** 当前生效的规则文件条目上限, 会话授权上限与可写申请开关. */
+  /** 当前生效的规则文件条目上限, 会话授权上限, 可写申请开关与保鲜配置. */
   private currentLimits;
   /** 校验并回退规则文件名, 非法值告警一次. */
   private warnAboutFileName;

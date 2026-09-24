@@ -9,9 +9,11 @@ import { describe, expect, it } from 'vitest'
 import {
   ALLOW_REQUESTS_FIELD, DEFAULT_ALLOW_REQUESTS, DEFAULT_HARDEN_BROKER,
   DEFAULT_MAX_GRANTS, DEFAULT_MAX_READONLY_ENTRIES, DEFAULT_READONLY_FILE_NAME,
-  DEFAULT_READ_ONLY_PATHS, DEFAULT_WRITABLE_PATHS,
+  DEFAULT_READ_ONLY_PATHS, DEFAULT_WATCH_PROTECTED_PATHS, DEFAULT_WATCH_TTL_MAX_MS,
+  DEFAULT_WATCH_TTL_MIN_MS, DEFAULT_WRITABLE_PATHS,
   HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
-  PATTERNS_FIELD, READONLY_FILE_FIELD, WRITABLE_FIELD,
+  PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD,
+  WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
 import { projectTmpDir } from './fixture-root.ts'
@@ -35,6 +37,9 @@ function fakeSettings(config: Partial<Config>): FakeSettings {
     [MAX_READONLY_ENTRIES_FIELD]: config.maxReadOnlyEntries ?? DEFAULT_MAX_READONLY_ENTRIES,
     [MAX_GRANTS_FIELD]: config.maxGrants ?? DEFAULT_MAX_GRANTS,
     [ALLOW_REQUESTS_FIELD]: config.allowWritableRequests ?? DEFAULT_ALLOW_REQUESTS,
+    [WATCH_FIELD]: config.watchProtectedPaths ?? DEFAULT_WATCH_PROTECTED_PATHS,
+    [WATCH_TTL_MIN_FIELD]: config.watchTtlMinMs ?? DEFAULT_WATCH_TTL_MIN_MS,
+    [WATCH_TTL_MAX_FIELD]: config.watchTtlMaxMs ?? DEFAULT_WATCH_TTL_MAX_MS,
     [PATTERNS_FIELD]: config.patterns,
     [WRITABLE_FIELD]: config.writablePatterns,
   }
@@ -69,6 +74,9 @@ async function setup(config: Partial<Config> = {}): Promise<{
     maxReadOnlyEntries: ref<number>(MAX_READONLY_ENTRIES_FIELD),
     maxGrants: ref<number>(MAX_GRANTS_FIELD),
     allowWritableRequests: ref<boolean>(ALLOW_REQUESTS_FIELD),
+    watchProtectedPaths: ref<boolean>(WATCH_FIELD),
+    watchTtlMinMs: ref<number>(WATCH_TTL_MIN_FIELD),
+    watchTtlMaxMs: ref<number>(WATCH_TTL_MAX_FIELD),
   }
   // 投影替身要带 stateOf: 提示词组装会经 resolve() 读沙箱模式覆盖.
   ctx.provide('sessionProjections', { register: () => {}, stateOf: () => undefined })
@@ -133,20 +141,51 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     expect(policy.resolve({ session: sessionStub() }).readOnlyPaths).toEqual(['/ws/secrets'])
   })
 
-  it('规则文件名, 两个上限与可写申请开关都走同一套 base 与用户覆盖', async () => {
+  it('规则文件名, 上限与三个开关都走同一套 base 与用户覆盖', async () => {
     const { policy, settings } = await setup()
     expect(settings.base()[READONLY_FILE_FIELD]).toBe('.readonly')
     expect(settings.base()[MAX_READONLY_ENTRIES_FIELD]).toBe(200)
     expect(settings.base()[MAX_GRANTS_FIELD]).toBe(8)
     expect(settings.base()[ALLOW_REQUESTS_FIELD]).toBe(true)
-    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8, allowWritableRequests: true })
+    expect(settings.base()[WATCH_FIELD]).toBe(true)
+    expect(settings.base()[WATCH_TTL_MIN_FIELD]).toBe(2000)
+    expect(settings.base()[WATCH_TTL_MAX_FIELD]).toBe(30000)
+    expect(policy.limits()).toEqual({
+      readonlyFileName: '.readonly',
+      maxReadOnlyEntries: 200,
+      maxGrants: 8,
+      allowWritableRequests: true,
+      watchProtectedPaths: true,
+      watchTtlMinMs: 2000,
+      watchTtlMaxMs: 30000,
+    })
     settings.save({
       [READONLY_FILE_FIELD]: 'rules.txt',
       [MAX_READONLY_ENTRIES_FIELD]: 5,
       [MAX_GRANTS_FIELD]: 2,
       [ALLOW_REQUESTS_FIELD]: false,
+      [WATCH_FIELD]: false,
+      [WATCH_TTL_MIN_FIELD]: 500,
+      [WATCH_TTL_MAX_FIELD]: 4000,
     })
-    expect(policy.limits()).toEqual({ readonlyFileName: 'rules.txt', maxReadOnlyEntries: 5, maxGrants: 2, allowWritableRequests: false })
+    expect(policy.limits()).toEqual({
+      readonlyFileName: 'rules.txt',
+      maxReadOnlyEntries: 5,
+      maxGrants: 2,
+      allowWritableRequests: false,
+      watchProtectedPaths: false,
+      watchTtlMinMs: 500,
+      watchTtlMaxMs: 4000,
+    })
+  })
+
+  it('上界小于下界时按较大的那个算, 非法值回退默认', async () => {
+    const { policy } = await setup({ watchTtlMinMs: 5000, watchTtlMaxMs: 1000 })
+    expect(policy.limits().watchTtlMinMs).toBe(5000)
+    expect(policy.limits().watchTtlMaxMs).toBe(5000)
+    const { policy: fallback } = await setup({ watchTtlMinMs: 0, watchTtlMaxMs: -1 })
+    expect(fallback.limits().watchTtlMinMs).toBe(DEFAULT_WATCH_TTL_MIN_MS)
+    expect(fallback.limits().watchTtlMaxMs).toBe(DEFAULT_WATCH_TTL_MAX_MS)
   })
 
   it('部署 base 可以关掉可写申请', async () => {
@@ -166,7 +205,15 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
 
   it('部署 base 的非法上限回退默认值', async () => {
     const { policy } = await setup({ maxGrants: 0, maxReadOnlyEntries: -3 })
-    expect(policy.limits()).toEqual({ readonlyFileName: '.readonly', maxReadOnlyEntries: 200, maxGrants: 8, allowWritableRequests: true })
+    expect(policy.limits()).toEqual({
+      readonlyFileName: '.readonly',
+      maxReadOnlyEntries: 200,
+      maxGrants: 8,
+      allowWritableRequests: true,
+      watchProtectedPaths: true,
+      watchTtlMinMs: 2000,
+      watchTtlMaxMs: 30000,
+    })
   })
 
   it('无会话根时不展开保护路径: 原文进 readOnlyPatterns, 路径清单为空', async () => {

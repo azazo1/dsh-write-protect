@@ -9,7 +9,7 @@ import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 // Type-only: pulls the SlotRegistry service merge (ctx.slots).
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, READONLY_FILE_FIELD, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
+import { ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, PLUGIN_ID, PREVIEW_PATH, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD, WRITABLE_FIELD, type PathPreview } from '../constants.ts'
 import { WriteProtectPreviewPanel } from './preview-panel.ts'
 
 /** 组件对 settings scope 的最小结构视图 (避免耦合具体包的类型导出). */
@@ -23,6 +23,9 @@ export interface WriteProtectValues {
   maxReadOnlyEntries?: number
   maxGrants?: number
   allowWritableRequests?: boolean
+  watchProtectedPaths?: boolean
+  watchTtlMinMs?: number
+  watchTtlMaxMs?: number
 }
 
 export interface WriteProtectScope {
@@ -140,6 +143,18 @@ export function WriteProtectSection(
     listener => scope.subscribe(listener),
     () => scope.getSnapshot().value?.allowWritableRequests ?? true,
   )
+  const savedWatch = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.watchProtectedPaths ?? true,
+  )
+  const savedWatchMin = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.watchTtlMinMs ?? 2000,
+  )
+  const savedWatchMax = useSyncExternalStore(
+    listener => scope.subscribe(listener),
+    () => scope.getSnapshot().value?.watchTtlMaxMs ?? 30000,
+  )
   // null 表示没有本地编辑: 输入框展示 Host 侧的当前值.
   const [patternsDraft, setPatternsDraft] = useState<string | null>(null)
   const [writableDraft, setWritableDraft] = useState<string | null>(null)
@@ -148,6 +163,9 @@ export function WriteProtectSection(
   const [maxEntriesDraft, setMaxEntriesDraft] = useState<string | null>(null)
   const [maxGrantsDraft, setMaxGrantsDraft] = useState<string | null>(null)
   const [allowRequestsDraft, setAllowRequestsDraft] = useState<boolean | null>(null)
+  const [watchDraft, setWatchDraft] = useState<boolean | null>(null)
+  const [watchMinDraft, setWatchMinDraft] = useState<string | null>(null)
+  const [watchMaxDraft, setWatchMaxDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [view, setView] = useState<'edit' | 'preview'>('edit')
   const [previewing, setPreviewing] = useState(false)
@@ -160,6 +178,9 @@ export function WriteProtectSection(
   const maxEntriesValue = maxEntriesDraft ?? String(savedMaxEntries)
   const maxGrantsValue = maxGrantsDraft ?? String(savedMaxGrants)
   const allowRequestsValue = allowRequestsDraft ?? savedAllowRequests
+  const watchValue = watchDraft ?? savedWatch
+  const watchMinValue = watchMinDraft ?? String(savedWatchMin)
+  const watchMaxValue = watchMaxDraft ?? String(savedWatchMax)
   const dirty = (patternsDraft !== null && patternsDraft !== savedPatterns)
     || (writableDraft !== null && writableDraft !== savedWritable)
     || (hardenDraft !== null && hardenDraft !== savedHarden)
@@ -167,6 +188,9 @@ export function WriteProtectSection(
     || (maxEntriesDraft !== null && maxEntriesDraft !== String(savedMaxEntries))
     || (maxGrantsDraft !== null && maxGrantsDraft !== String(savedMaxGrants))
     || (allowRequestsDraft !== null && allowRequestsDraft !== savedAllowRequests)
+    || (watchDraft !== null && watchDraft !== savedWatch)
+    || (watchMinDraft !== null && watchMinDraft !== String(savedWatchMin))
+    || (watchMaxDraft !== null && watchMaxDraft !== String(savedWatchMax))
 
   const onPreview = (): void => {
     setPreviewing(true)
@@ -235,6 +259,9 @@ export function WriteProtectSection(
     if (maxEntriesDraft !== null) writes.push(Promise.resolve(scope.set(MAX_READONLY_ENTRIES_FIELD, parsePositive(maxEntriesDraft, savedMaxEntries))))
     if (maxGrantsDraft !== null) writes.push(Promise.resolve(scope.set(MAX_GRANTS_FIELD, parsePositive(maxGrantsDraft, savedMaxGrants))))
     if (allowRequestsDraft !== null) writes.push(Promise.resolve(scope.set(ALLOW_REQUESTS_FIELD, allowRequestsDraft)))
+    if (watchDraft !== null) writes.push(Promise.resolve(scope.set(WATCH_FIELD, watchDraft)))
+    if (watchMinDraft !== null) writes.push(Promise.resolve(scope.set(WATCH_TTL_MIN_FIELD, parsePositive(watchMinDraft, savedWatchMin))))
+    if (watchMaxDraft !== null) writes.push(Promise.resolve(scope.set(WATCH_TTL_MAX_FIELD, parsePositive(watchMaxDraft, savedWatchMax))))
     void Promise.all(writes).then(() => {
       setSaving(false)
       setPatternsDraft(null)
@@ -244,6 +271,9 @@ export function WriteProtectSection(
       setMaxEntriesDraft(null)
       setMaxGrantsDraft(null)
       setAllowRequestsDraft(null)
+      setWatchDraft(null)
+      setWatchMinDraft(null)
+      setWatchMaxDraft(null)
     })
   }
 
@@ -399,6 +429,48 @@ export function WriteProtectSection(
         ' 绝对条目与越出工作区的条目会被拒绝, 超过条目上限的部分丢弃并告警. 文件名留空即关闭该识别; 名字里不能有路径分隔符, 也不能用 ',
         createElement('code', null, '.git'),
         ' 一类元数据名. 这份文件本身永远不可写 (唯一的硬保护): 模型申请可写路径不会放开它, 任何授权都不放行它, 要改只能在这里换文件名或者由你在 DSH 之外编辑.',
+      ),
+    ),
+    createElement(
+      'div',
+      { className: 'dsh-wp-card' },
+      createElement('h3', { className: 'dsh-wp-card-title' }, '命令侧刷新'),
+      createElement(
+        'label',
+        { className: 'dsh-wp-toggle' },
+        createElement('input', {
+          type: 'checkbox',
+          checked: watchValue,
+          onChange: (event: { currentTarget: { checked: boolean } }) => setWatchDraft(event.currentTarget.checked),
+        }),
+        createElement('span', null, watchValue ? '监听工作区变化' : '不监听, 只按时间兜底'),
+      ),
+      createElement(
+        'div',
+        { className: 'dsh-wp-row' },
+        createElement('span', { className: 'dsh-wp-row-label' }, '刷新下界 (毫秒)'),
+        createElement('input', {
+          className: 'dsh-wp-input dsh-wp-input-sm',
+          inputMode: 'numeric',
+          value: watchMinValue,
+          onChange: (event: { currentTarget: { value: string } }) => setWatchMinDraft(event.currentTarget.value),
+        }),
+        createElement('span', { className: 'dsh-wp-row-label' }, '刷新上界 (毫秒)'),
+        createElement('input', {
+          className: 'dsh-wp-input dsh-wp-input-sm',
+          inputMode: 'numeric',
+          value: watchMaxValue,
+          onChange: (event: { currentTarget: { value: string } }) => setWatchMaxDraft(event.currentTarget.value),
+        }),
+      ),
+      createElement(
+        'p',
+        { className: 'dsh-wp-hint' },
+        '命令侧 (bash 等) 的保护路径要展开成真实路径才能交给沙箱, 因此新建的受保护路径可能晚一步进清单. 开启后只给"正在运行 agent 的会话"的工作区根装递归监听, 一变就立刻在后台重算, 所以 ',
+        createElement('code', null, 'git init'),
+        ' 建出来的 ',
+        createElement('code', null, '.git'),
+        ' 在后续命令里就会被拦住. 没有事件时按上次展开耗时的 10 倍兜底重算, 并夹在上面两个毫秒值之间. macOS 上的字面条目另有正则拒绝, 不依赖这里. 监听装不上时只告警一次, 退回纯时间兜底.',
       ),
     ),
   )

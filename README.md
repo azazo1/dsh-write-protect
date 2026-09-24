@@ -48,6 +48,9 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
     # maxReadOnlyEntries: 200
     # maxGrants: 8
     # allowWritableRequests: true   # 置 false 即不许模型申请可写路径
+    # watchProtectedPaths: true   # 置 false 即不监听工作区变化, 只按时间兜底
+    # watchTtlMinMs: 2000
+    # watchTtlMaxMs: 30000
 ```
 
 `readOnlyPaths` 的每一项是一行 gitignore 语义的模式, 数组逐行合并为生效文本:
@@ -78,7 +81,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 - 关掉后命令按官方 profile 运行, 只影响 macOS, 只影响这一个加固; 保护路径与额外可写根照常.
 - 用户在设置页拨动开关后该值不再生效.
 
-`readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` 同理, 是只读规则文件与可写申请的部署 base (见后两节), 用户保存过对应字段后该值不再生效.
+`readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` / `watchProtectedPaths` / `watchTtlMinMs` / `watchTtlMaxMs` 同理, 是只读规则文件, 可写申请与命令侧刷新的部署 base (见后两节), 用户保存过对应字段后该值不再生效.
 
 源码分三块, 边界是"有没有文件系统依赖":
 
@@ -156,6 +159,17 @@ secrets/
 
 macOS 上命令侧还有第二条通道: Seatbelt profile 支持按正则匹配路径, 因此**字面条目**会被直接翻译成 `(deny file-write* (regex ...))`, 不经过枚举 —— 展开当时还不存在的路径 (会话中途 `git init` 出来的 `.git`) 同样挡得住, 也不受展开缓存窗口影响. 含通配或转义的条目仍走枚举清单, 原因见下方限制.
 
+### 命令侧清单的保鲜
+
+`bwrap` 只能挂载真实存在的目录, 所以命令侧的保护清单来自一次"展开", 而展开结果会缓存. 会话中途才出现的受保护路径 (例如刚 `git init` 出来的 `.git`) 若不在清单里, 那条命令就写得进去. 为此有两层保障:
+
+- **正则拒绝 (macOS)**: 字面条目不经过展开, 见上一节.
+- **监听 + 自适应刷新 (全平台)**: 只给"正在运行 agent 的会话"的工作区根装递归监听; agent 跑完或会话销毁就摘掉, 空闲不占资源. 监听一报变化就立即在后台重算清单 (短时间内的多次事件合并成一次), 所以下一条命令直接用新清单, 不必等缓存过期.
+- **时间兜底**: 没有事件时, 按"上次展开耗时 × 10"兜底重算, 并夹在 `watchTtlMinMs` (默认 2 秒) 与 `watchTtlMaxMs` (默认 30 秒) 之间; 监听装不上或漏事件时不会一直陈旧. 关掉 `watchProtectedPaths` 后不装监听, 只剩这一层.
+- 命令遇到已过期的缓存时会等这次扫描完成再执行, 因此刷新不会变成"先放行、事后补救".
+
+这一步只影响命令侧. write / edit 围栏始终按模式原文判定, 与展开、监听、缓存都无关.
+
 主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式.
 
 ### macOS broker 逃逸加固
@@ -183,7 +197,7 @@ patch 配置和设置页文本走同一套解析.
 - **Linux 没有 bwrap, 落到 Landlock 时**: 没法单独保护子路径, 命令按官方沙箱跑并告警一次; 额外可写根可以加 `--rw`. write / edit 两者都生效.
 - **完全放开沙箱时** (`danger-full-access`): 本插件整体不介入 —— bash 不进沙箱, write / edit 的保护路径与规则文件判定也跳过. 该模式是用户显式选择的"不设限", 保护只在 `read-only` 与 `workspace-write` 下生效.
 - **Linux bwrap 要求路径真实存在**: 通配扫出来的保护路径如果当时还不在磁盘上, 会跳过这条只读挂载并告警. 需要无条件保护的工作区根路径请用字面条目 (如 `/.git`); 字面条目即使还不存在, write / edit 也会拒绝.
-- **命令侧的枚举窗口 (macOS 字面条目除外)**: Linux bwrap / Landlock 与 macOS 上的通配条目只能按枚举出来的路径保护, 新建路径最迟在下一次展开时纳入; 展开结果缓存 60 秒. macOS 上的**字面条目**没有这个窗口 (按正则拒绝, 见上节), 因此 `git init` 也建不出 `.git`. 已经要保护的目录不会再往里扫, 里面的匹配项不再单独列出; 被 `!` 放行的目录还会继续找. 目录符号链接不跟随, 避免扫到工作区外. write / edit 不受这条限制: 它直接按模式判定.
+- **命令侧的枚举窗口 (macOS 字面条目除外)**: Linux bwrap / Landlock 与 macOS 上的通配条目只能按枚举出来的路径保护. 有 watcher 时, 变化之后的下一条命令就会吃到新清单; watcher 不可用时退回时间兜底 (最多 `watchTtlMaxMs`, 默认 30 秒). macOS 上的**字面条目**没有这个窗口 (按正则拒绝, 见上节), 因此 `git init` 也建不出 `.git`. 已经要保护的目录不会再往里扫, 里面的匹配项不再单独列出; 被 `!` 放行的目录还会继续找. 目录符号链接不跟随, 避免扫到工作区外. write / edit 不受这条限制: 它直接按模式判定.
 - **正则拒绝只覆盖字面条目, 且遇到 `!` 就整体放弃**: 含 `*` `?` `[` 或 `\` 的条目仍走枚举清单; 文本里只要出现 `!` 取反, 命令侧就退回纯枚举 (纯 deny 表达不了 last-match-wins). 目录标记条目在正则通道上不区分目标是文件还是目录, 同名文件也会被一并挡住, 属于收紧.
 - **尾部 `/**` 按那个目录本身保护**: 和保护其下全部后代等价, 同时避免枚举全部后代, 代价是该目录自己也写不了.
 - **规则文件的条目同样受缓存窗口影响**: 规则文件内容按 1 秒 TTL 重读, 改完最迟 1 秒后按新内容判定; 新增的匹配路径还要等下一次枚举 (60 秒 TTL) 才会进命令沙箱的清单, write / edit 侧立刻按新条目判定.

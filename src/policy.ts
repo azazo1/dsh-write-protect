@@ -35,6 +35,9 @@ import {
   DEFAULT_MAX_READONLY_ENTRIES,
   DEFAULT_READONLY_FILE_NAME,
   DEFAULT_READ_ONLY_PATHS,
+  DEFAULT_WATCH_PROTECTED_PATHS,
+  DEFAULT_WATCH_TTL_MAX_MS,
+  DEFAULT_WATCH_TTL_MIN_MS,
   DEFAULT_WRITABLE_PATHS,
   PROMPT_CONTEXT_ORDER,
   REQUEST_WRITABLE_PATH_TOOL,
@@ -44,6 +47,7 @@ import { compileGitignore } from './gitignore.ts'
 import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
 import { mountPreviewRoute, type PreviewConnection } from './preview-route.ts'
 import { EMPTY_READ_ONLY_FILE, ReadOnlyFileCache, mergeReadOnlyText, type ReadOnlyFile } from './readonly-file.ts'
+import { ExpansionRefresher, type ExpansionInputs, type ExpansionSnapshot } from './refresh.ts'
 import { GrantsService, registerRequestWritablePath, type GrantPolicyHost } from './request-writable-path.ts'
 
 export const name = 'dsh-write-protect-policy'
@@ -100,6 +104,22 @@ export interface Config {
    * 拒绝, 提示词也不再引导模型去申请; 用户保存过该字段后此值不再生效.
    */
   allowWritableRequests?: boolean | Volatile<boolean>
+  /**
+   * 是否监听工作区变化 (命令侧展开清单的保鲜), 缺省开启 (见
+   * `DEFAULT_WATCH_PROTECTED_PATHS`). 开启时只给正在运行 agent 的会话的工作区根
+   * 装递归 watcher, 变化后立即后台重扫; 关掉后不装 watcher, 只剩自适应 TTL.
+   */
+  watchProtectedPaths?: boolean | Volatile<boolean>
+  /**
+   * 自适应刷新时长的下界 (毫秒), 缺省 2000 (见 `DEFAULT_WATCH_TTL_MIN_MS`).
+   * 上次展开耗时乘 10 后不低于它.
+   */
+  watchTtlMinMs?: number | Volatile<number>
+  /**
+   * 自适应刷新时长的上界 (毫秒), 缺省 30000 (见 `DEFAULT_WATCH_TTL_MAX_MS`).
+   * 上次展开耗时乘 10 后不高于它, 也是 watcher 失效时的兜底刷新间隔.
+   */
+  watchTtlMaxMs?: number | Volatile<number>
   /** 用户保存的保护路径多行文本; 缺省回退 readOnlyPaths. */
   patterns?: string | Volatile<string>
   /** 用户保存的额外可写根多行文本; 缺省回退 writablePaths. */
@@ -114,18 +134,10 @@ function currentConfigValue<T>(value: T | Volatile<T> | undefined, fallback: T):
   return current === undefined ? fallback : current
 }
 
-/**
- * 枚举结果的缓存有效时长. write / edit 不靠这份清单, 长一点能避免大工作区
- * 上每次 bash 都重扫; 新建的匹配目录仍由模式围栏挡住, 只是进程沙箱要等下次
- * materialize 才把路径编进 bind / profile.
- */
-const EXPAND_TTL_MS = 60_000
-
-/** 一次枚举得到的保护路径, 额外可写根, 以及当时生效的保护路径原文. */
-export interface PathSnapshot {
-  readonly readOnly: readonly string[]
-  readonly writable: readonly string[]
-  readonly patterns: string
+/** 会话事件里用得到的部分: 只读 id 与 header.cwd (agent/status 事件也带这个形状). */
+interface SessionLike {
+  readonly id: string
+  readonly header?: { readonly cwd?: string }
 }
 
 /** 一次同步解析得到的生效文本, 本会话授权与缓存里已有的枚举清单. */
@@ -142,6 +154,9 @@ export interface ResolvedConfigValues {
   readonly maxReadOnlyEntries: number
   readonly maxGrants: number
   readonly allowWritableRequests: boolean
+  readonly watchProtectedPaths: boolean
+  readonly watchTtlMinMs: number
+  readonly watchTtlMaxMs: number
 }
 
 /** 目标当前是否是目录: 不存在或读不到时按非目录处理. */
@@ -167,6 +182,9 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     maxReadOnlyEntries: z.number().default(DEFAULT_MAX_READONLY_ENTRIES).volatile(),
     maxGrants: z.number().default(DEFAULT_MAX_GRANTS).volatile(),
     allowWritableRequests: z.boolean().default(DEFAULT_ALLOW_REQUESTS).volatile(),
+    watchProtectedPaths: z.boolean().default(DEFAULT_WATCH_PROTECTED_PATHS).volatile(),
+    watchTtlMinMs: z.number().default(DEFAULT_WATCH_TTL_MIN_MS).volatile(),
+    watchTtlMaxMs: z.number().default(DEFAULT_WATCH_TTL_MAX_MS).volatile(),
   })
 
   private readonly readOnlyFiles: ReadOnlyFileCache
@@ -177,22 +195,15 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
    * 同一份 policy; 设置页预览也用它把授权记录对上是哪个工作区. 进程内存态.
    */
   private readonly sessionRoots = new Map<string, string>()
-  /** 单槽展开缓存: 键是 (保护文本, 可写文本, 工作区根), 任一变化即失效. */
-  private cache: {
-    at: number
-    key: string
-    readOnly: readonly string[]
-    writable: readonly string[]
-    patterns: string
-  } = {
-    at: 0,
-    key: '',
-    readOnly: [],
-    writable: [],
-    patterns: '',
-  }
+  /**
+   * 正在运行 agent 的会话: 会话 id -> 工作区根. watcher 只服务这批会话, 因此这里
+   * 按会话 id 记账 (而不是按根计数), 这样 "status 转 idle" 与 "会话销毁" 两条路径
+   * 重复触发也不会把计数弄错.
+   */
+  private readonly runningSessions = new Map<string, string>()
+  /** 展开结果的保鲜: watcher + 自适应 TTL, 见 refresh.ts. */
+  private readonly refresher: ExpansionRefresher
   private readonly warned = new Set<string>()
-  private inflight: { key: string, promise: Promise<PathSnapshot> } | undefined
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, config)
@@ -218,6 +229,22 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       () => this.currentLimits().maxGrants,
       () => {},
     )
+    this.refresher = new ExpansionRefresher({
+      watchingEnabled: () => this.currentLimits().watchProtectedPaths,
+      ttlFloorMs: () => this.currentLimits().watchTtlMinMs,
+      ttlCeilingMs: () => this.currentLimits().watchTtlMaxMs,
+      inputsOf: workspaceRoot => this.expansionInputs(workspaceRoot),
+      expand: async (workspaceRoot, inputs) => await this.expandNow(workspaceRoot, inputs),
+      onWarning: message => this.warn(message),
+    })
+    // 保鲜只服务"正在跑的会话": 开始跑时装 watcher, 跑完或会话销毁时摘掉.
+    ctx.on('agent/status', ({ agent, status }: { agent: { session: SessionLike }, status: string }) => {
+      this.setSessionRunning(agent.session, status === 'running')
+    })
+    ctx.on('session/disposed', (session: SessionLike) => {
+      this.setSessionRunning(session, false)
+    })
+    ctx.effect(() => () => this.refresher.dispose())
 
     ctx.inject(['systemPrompt'], (scope: Context) => {
       scope.systemPrompt.context({
@@ -322,52 +349,69 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
    * @param workspaceRoot - 会话工作区根.
    * @returns 展开后的保护路径, 额外可写根与当时的保护路径原文.
    */
-  async materialize(workspaceRoot: string): Promise<PathSnapshot> {
+  async materialize(workspaceRoot: string): Promise<ExpansionSnapshot> {
+    return await this.refresher.materialize(workspaceRoot, this.expansionInputs(workspaceRoot))
+  }
+
+  /**
+   * 一次展开的输入: 生效保护文本 (设置页文本与规则文件合并) 与额外可写文本, 以及
+   * 由这两份文本组成的缓存键. 文本变过就一定要重新展开.
+   */
+  private expansionInputs(workspaceRoot: string): ExpansionInputs {
     const readOnlyText = this.readOnlyTextAt(workspaceRoot)
     const writableText = this.currentWritableText()
-    const key = this.cacheKey(readOnlyText, writableText, workspaceRoot)
-    const cached = this.peek(key)
-    if (cached !== undefined) return cached
-    if (this.inflight?.key === key) return this.inflight.promise
-    const promise = this.expandNow(workspaceRoot, key, readOnlyText, writableText)
-    this.inflight = { key, promise }
-    try {
-      return await promise
-    } finally {
-      if (this.inflight?.promise === promise) this.inflight = undefined
-    }
+    return { key: [readOnlyText, writableText].join('\u0000'), readOnlyText, writableText }
   }
 
-  /** 展开缓存的键: 两份文本与工作区根都参与. */
-  private cacheKey(readOnlyText: string, writableText: string, workspaceRoot: string): string {
-    return [readOnlyText, writableText, workspaceRoot].join('\u0000')
-  }
-
-  /** 缓存命中且未过期时返回快照, 否则 undefined. */
-  private peek(key: string): PathSnapshot | undefined {
-    if (Date.now() - this.cache.at >= EXPAND_TTL_MS || this.cache.key !== key) return undefined
-    return { readOnly: this.cache.readOnly, writable: this.cache.writable, patterns: this.cache.patterns }
-  }
-
-  /** 真正执行一次展开, 按 key 写入缓存, 并把各条告警去重后写日志. */
-  private async expandNow(
-    workspaceRoot: string,
-    key: string,
-    readOnlyText: string,
-    writableText: string,
-  ): Promise<PathSnapshot> {
-    const readOnly = await expandReadOnlyPaths(readOnlyText, workspaceRoot)
-    const writable = expandWritablePaths(writableText, workspaceRoot)
+  /** 真正执行一次展开, 并把各条告警去重后写日志. */
+  private async expandNow(workspaceRoot: string, inputs: ExpansionInputs): Promise<ExpansionSnapshot> {
+    const readOnly = await expandReadOnlyPaths(inputs.readOnlyText, workspaceRoot)
+    const writable = expandWritablePaths(inputs.writableText, workspaceRoot)
     for (const warning of [...readOnly.warnings, ...writable.warnings]) {
       this.warn(warning)
     }
-    const snapshot: PathSnapshot = {
+    return {
       readOnly: readOnly.paths,
       writable: writable.paths,
-      patterns: readOnlyText,
+      patterns: inputs.readOnlyText,
     }
-    this.cache = { at: Date.now(), key, ...snapshot }
-    return snapshot
+  }
+
+  /**
+   * 记录 / 撤销一个"正在运行 agent 的会话". watcher 只装给这批会话的工作区根:
+   * 开始运行时装上, 运行结束 (或会话销毁) 时摘掉. 同一个根被多个会话共用时按会话
+   * 计数, 最后一个会话结束后才摘.
+   * @param session - 事件里的会话 (只需要 id 与 header.cwd).
+   * @param running - 是否正在运行.
+   */
+  private setSessionRunning(session: SessionLike | undefined, running: boolean): void {
+    const sessionId = session?.id
+    if (sessionId === undefined) return
+    if (running) {
+      const root = this.localWorkspaceRootOf(session)
+      if (root === undefined) return
+      if (this.runningSessions.get(sessionId) === root) return
+      if (this.runningSessions.has(sessionId)) this.setSessionRunning(session, false)
+      this.runningSessions.set(sessionId, root)
+      this.refresher.addUser(root)
+      return
+    }
+    const root = this.runningSessions.get(sessionId)
+    if (root === undefined) return
+    this.runningSessions.delete(sessionId)
+    this.refresher.removeUser(root)
+  }
+
+  /**
+   * 会话的本地工作区根 (canonical), 取不到可监听的本地路径时返回 undefined.
+   *
+   * 今天 dsh 的会话只有本地 cwd 一种形态; 将来出现远端会话时, 这里会拿不到本地
+   * 路径 (或拿到远端路径), 于是自然退化成"不装 watcher, 只用 TTL".
+   */
+  private localWorkspaceRootOf(session: SessionLike | undefined): string | undefined {
+    const cwd = session?.header?.cwd
+    if (cwd === undefined || cwd.trim().length === 0) return undefined
+    return resolvePath(canonicalPath(cwd))
   }
 
   /** 展开额外可写根文本 (纯字面路径, 不扫盘) 并把告警去重后写日志. */
@@ -466,13 +510,19 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return compileGitignore(text).match(target, policy.workspaceRoot, isDirectory(target))?.entry.source
   }
 
-  /** 当前生效的规则文件条目上限, 会话授权上限与可写申请开关. */
+  /** 当前生效的规则文件条目上限, 会话授权上限, 可写申请开关与保鲜配置. */
   private currentLimits(): ResolvedConfigValues {
+    const watchTtlMinMs = this.positiveLimit(currentConfigValue(this.config.watchTtlMinMs, DEFAULT_WATCH_TTL_MIN_MS), DEFAULT_WATCH_TTL_MIN_MS, 'watchTtlMinMs')
+    const watchTtlMaxMs = this.positiveLimit(currentConfigValue(this.config.watchTtlMaxMs, DEFAULT_WATCH_TTL_MAX_MS), DEFAULT_WATCH_TTL_MAX_MS, 'watchTtlMaxMs')
     return {
       readonlyFileName: this.warnAboutFileName(currentConfigValue(this.config.readonlyFileName, DEFAULT_READONLY_FILE_NAME)),
       maxReadOnlyEntries: this.positiveLimit(currentConfigValue(this.config.maxReadOnlyEntries, DEFAULT_MAX_READONLY_ENTRIES), DEFAULT_MAX_READONLY_ENTRIES, 'maxReadOnlyEntries'),
       maxGrants: this.positiveLimit(currentConfigValue(this.config.maxGrants, DEFAULT_MAX_GRANTS), DEFAULT_MAX_GRANTS, 'maxGrants'),
       allowWritableRequests: currentConfigValue(this.config.allowWritableRequests, DEFAULT_ALLOW_REQUESTS),
+      watchProtectedPaths: currentConfigValue(this.config.watchProtectedPaths, DEFAULT_WATCH_PROTECTED_PATHS),
+      watchTtlMinMs,
+      // 上界小于下界时按上下界里较大的那个算, 免得自适应区间反转.
+      watchTtlMaxMs: Math.max(watchTtlMinMs, watchTtlMaxMs),
     }
   }
 
@@ -522,7 +572,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     }
     const readOnlyPatterns = this.readOnlyTextAt(workspaceRoot)
     const writableText = this.currentWritableText()
-    const cached = this.peek(this.cacheKey(readOnlyPatterns, writableText, workspaceRoot))
+    const cached = this.refresher.peek(workspaceRoot, [readOnlyPatterns, writableText].join('\u0000'))
     const writable = cached?.writable ?? this.expandWritable(writableText, workspaceRoot)
     return {
       readOnlyPatterns,
