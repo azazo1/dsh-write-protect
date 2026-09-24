@@ -1,53 +1,55 @@
-// sessionCwdOf: 设置页预览从 client sessions store 取当前会话 cwd.
+// sessionCwdOf: 设置页预览从 client sessions store 取当前选中会话的 cwd.
 
 import { describe, expect, it } from 'vitest'
-import { sessionCwdOf, type SessionsLike } from '../src/client/session-cwd.ts'
+import { sessionCwdOf, type SessionListRow, type SessionsLike } from '../src/client/session-cwd.ts'
 
-function sessions(snap: { current?: string, byId?: Record<string, { cwd?: string, parentId?: string }> }): SessionsLike {
-  return { list: { getSnapshot: () => snap } }
+/** 被主视图持有的行 (界面上当前选中的会话). */
+function mainView(row: SessionListRow): SessionListRow {
+  return { ...row, retainedBy: { mainView: 1 } }
+}
+
+function sessions(byId: Record<string, SessionListRow>): SessionsLike {
+  return { list: { getSnapshot: () => ({ byId }) } }
 }
 
 describe('sessionCwdOf', () => {
-  it('没有 sessions 或没有选中会话时返回 undefined', () => {
+  it('没有 sessions 服务时返回 undefined', () => {
     expect(sessionCwdOf(undefined)).toBeUndefined()
     expect(sessionCwdOf({})).toBeUndefined()
-    expect(sessionCwdOf(sessions({ byId: { a: { cwd: '/ws' } } }))).toBeUndefined()
+    expect(sessionCwdOf({ list: { getSnapshot: () => ({}) } })).toBeUndefined()
   })
 
-  it('返回当前会话的 cwd', () => {
+  it('没有被主视图持有的会话时返回 undefined', () => {
+    expect(sessionCwdOf(sessions({ s1: { cwd: '/ws' } }))).toBeUndefined()
+    expect(sessionCwdOf(sessions({ s1: { cwd: '/ws', retainedBy: { workspaceOperation: 1 } } }))).toBeUndefined()
+    expect(sessionCwdOf(sessions({ s1: { cwd: '/ws', retainedBy: { mainView: 0 } } }))).toBeUndefined()
+  })
+
+  it('返回当前选中会话的 cwd, 不被别的会话干扰', () => {
     expect(sessionCwdOf(sessions({
-      current: 's1',
-      byId: { s1: { cwd: '/Users/me/project' } },
+      other: { cwd: '/ws/other' },
+      s1: mainView({ cwd: '/Users/me/project' }),
     }))).toBe('/Users/me/project')
   })
 
   it('当前会话没有 cwd 时沿 parentId 向上找', () => {
     expect(sessionCwdOf(sessions({
-      current: 'child',
-      byId: {
-        child: { parentId: 'parent' },
-        parent: { cwd: '/ws/app' },
-      },
+      child: mainView({ parentId: 'parent' }),
+      parent: { cwd: '/ws/app' },
     }))).toBe('/ws/app')
   })
 
   it('空 cwd 不算, 继续向上', () => {
     expect(sessionCwdOf(sessions({
-      current: 'child',
-      byId: {
-        child: { cwd: '   ', parentId: 'parent' },
-        parent: { cwd: '/ws' },
-      },
+      child: mainView({ cwd: '   ', parentId: 'parent' }),
+      parent: { cwd: '/ws' },
     }))).toBe('/ws')
   })
 
   it('整条链都没有 cwd 时返回 undefined', () => {
     expect(sessionCwdOf(sessions({
-      current: 'child',
-      byId: {
-        child: { parentId: 'parent' },
-        parent: {},
-      },
+      child: mainView({ parentId: 'parent' }),
+      parent: {},
     }))).toBeUndefined()
   })
 })

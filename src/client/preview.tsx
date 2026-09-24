@@ -12,7 +12,7 @@ import type { WriteProtectTexts } from './settings-form.ts'
 export interface WriteProtectPreviewProps {
   /** 当前草稿文本, 由卡片从表单快照里取. */
   texts: WriteProtectTexts
-  /** 当前会话 cwd; 没有选中会话时返回 undefined, 预览走部署回退根. */
+  /** 当前选中会话的 cwd; 没有选中会话时返回 undefined, Host 侧直接报没有工作区根. */
   workspaceRootOf?: (() => string | undefined) | undefined
   /** 表单正在保存时禁用预览按钮. */
   disabled: boolean

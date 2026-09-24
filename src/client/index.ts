@@ -30,7 +30,7 @@ export const inject = ['configForms', 'slots', 'sessions']
 /** Policy host row id; ConfigForms is keyed by Loader entry id. */
 const CONFIG_ENTRY_ID = 'dsh-write-protect-policy'
 
-/** 取 sessions 服务 (可能缺席, 缺席时预览走部署回退根). */
+/** 取 sessions 服务 (可能缺席, 缺席时预览报没有工作区根). */
 function sessionsOf(ctx: ClientContext): SessionsLike | undefined {
   return (ctx as ClientContext & { sessions?: SessionsLike }).sessions
 }
