@@ -30,9 +30,10 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    */
   private overlayPaths;
   /**
-   * Seatbelt: 追加额外可写 allow, 保护路径 deny, 本会话旁路的 allow, 最后是
-   * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`;
-   * 旁路的 allow 又必须排在保护 deny 之后, 否则那条 deny 会盖掉它.
+   * Seatbelt: 追加额外可写 allow, 保护路径 deny (枚举清单与按原文生成的正则),
+   * 本会话旁路的 allow, 最后是 broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile
+   * 末尾才能盖过 `(allow default)`; 旁路的 allow 又必须排在保护 deny 之后, 否则
+   * 那条 deny 会盖掉它.
    * `hardenBroker` 被显式关掉时只跳过 broker 拒绝形式, 命令按官方 profile 运行.
    */
   private hardenSeatbelt;

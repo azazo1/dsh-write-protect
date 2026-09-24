@@ -15,9 +15,66 @@
  * @module dsh-write-protect/seatbelt
  */
 
+import { parsePatternLines, type PatternEntry } from './gitignore.ts'
+
 /** 把一个路径引用为 SBPL 字符串字面量 (与官方 profiles 的转义规则一致). */
 export function sbplString(path: string): string {
   return `"${path.replaceAll('\\', String.raw`\\`).replaceAll('"', String.raw`\"`)}"`
+}
+
+/** 正则元字符转义: 字面条目里的 `.` 一类字符必须按字面匹配. */
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** 条目能否直接翻译成正则: 含通配或转义的段留给枚举清单. */
+function isPlainLiteral(entry: PatternEntry): boolean {
+  return entry.segments.length > 0
+    && entry.segments.every(segment => !/[\\*?[\]]/.test(segment))
+}
+
+/**
+ * 一条字面条目对应的路径正则: 条目本体与它下面的全部后代都覆盖
+ * (Seatbelt 的 regex 过滤器不自动包含后代, 必须写进正则).
+ * 绝对条目 (`//` 前缀) 从文件系统根起算, 锚定条目从工作区根起算,
+ * 其余条目允许出现在工作区根之下的任意层级.
+ */
+function regexForEntry(entry: PatternEntry, workspaceRoot: string): string {
+  const literal = entry.segments.map(escapeRegex).join('/')
+  if (entry.fsAbsolute) return `^/${literal}(/.*)?$`
+  const root = escapeRegex(workspaceRoot.replace(/\/+$/, ''))
+  if (entry.anchored) return `^${root}/${literal}(/.*)?$`
+  return `^${root}(/.*)?/${literal}(/.*)?$`
+}
+
+/**
+ * 按保护路径**原文**生成 Seatbelt 正则拒绝形式.
+ *
+ * 枚举清单只能覆盖展开当时已经存在的路径, 因此像 `.git` 这种"会话中途才出现"
+ * 的受保护路径会漏掉 (展开结果还带缓存窗口). 字面条目不必扫盘就能翻译成正则,
+ * 于是它们在 macOS 上持续生效, 与该路径当前是否存在、展开缓存新旧都无关.
+ *
+ * 只处理字面条目: 含通配或转义的条目仍交给枚举清单. 只要文本里出现 `!` 取反就
+ * 整体放弃 —— 纯 deny 表达不了 gitignore 的 last-match-wins, 交给枚举兜底.
+ * 目录标记 (`build/`) 在这里不额外区分: 同名文件也会一并挡住, 属于收紧.
+ * @param text - 生效的保护路径原文 (设置页文本与工作区规则文件合并后的结果).
+ * @param workspaceRoot - 工作区根, 锚定条目与任意层级条目都以它为界.
+ * @returns SBPL `(deny file-write* (regex ...))` 形式; 无法表达时为空数组.
+ */
+export function seatbeltRegexDenials(text: string, workspaceRoot: string): string[] {
+  if (text.trim().length === 0) return []
+  const entries = parsePatternLines(text)
+  if (entries.some(entry => entry.negated)) return []
+  const forms: string[] = []
+  const seen = new Set<string>()
+  for (const entry of entries) {
+    if (!isPlainLiteral(entry)) continue
+    const pattern = regexForEntry(entry, workspaceRoot)
+    if (seen.has(pattern)) continue
+    seen.add(pattern)
+    forms.push(`(deny file-write* (regex #"${pattern.replaceAll('"', String.raw`\"`)}"))`)
+  }
+  return forms
 }
 
 /**

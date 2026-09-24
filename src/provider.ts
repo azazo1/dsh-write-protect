@@ -27,7 +27,7 @@ import { parse as parsePath } from 'node:path'
 import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
-import { SEATBELT_BROKER_DENIALS, appendSeatbeltForms, sbplString } from './seatbelt.ts'
+import { SEATBELT_BROKER_DENIALS, appendSeatbeltForms, sbplString, seatbeltRegexDenials } from './seatbelt.ts'
 
 export const name = 'dsh-write-protect-provider'
 
@@ -128,9 +128,10 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
   }
 
   /**
-   * Seatbelt: 追加额外可写 allow, 保护路径 deny, 本会话旁路的 allow, 最后是
-   * broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile 末尾才能盖过 `(allow default)`;
-   * 旁路的 allow 又必须排在保护 deny 之后, 否则那条 deny 会盖掉它.
+   * Seatbelt: 追加额外可写 allow, 保护路径 deny (枚举清单与按原文生成的正则),
+   * 本会话旁路的 allow, 最后是 broker 逃逸拒绝形式. 结尾的 deny 必须留在 profile
+   * 末尾才能盖过 `(allow default)`; 旁路的 allow 又必须排在保护 deny 之后, 否则
+   * 那条 deny 会盖掉它.
    * `hardenBroker` 被显式关掉时只跳过 broker 拒绝形式, 命令按官方 profile 运行.
    */
   private hardenSeatbelt(result: ConfinedArgv, policy: SandboxPolicy): ConfinedArgv {
@@ -141,6 +142,10 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
       const overrides = policy.writableOverrides ?? []
       if (extra.length > 0) next = this.withSeatbeltAllows(next, extra)
       if (protectedPaths.length > 0) next = this.withSeatbeltDenials(next, protectedPaths)
+      // 按原文生成的正则拒绝: 不依赖枚举清单, 所以会话中途才出现的受保护路径
+      // (例如刚被 `git init` 建出来的 `.git`) 在后续命令里同样挡得住.
+      const regexDenials = seatbeltRegexDenials(policy.readOnlyPatterns ?? '', policy.workspaceRoot)
+      if (regexDenials.length > 0) next = this.appendSeatbelt(next, regexDenials)
       if (overrides.length > 0) next = this.withSeatbeltAllows(next, overrides)
     }
     if (policy.hardenBroker === false) return next

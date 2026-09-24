@@ -281,4 +281,39 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const withOverride = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws', writableOverrides: ['/ws/gitdir'] })
     expect(withOverride.argv).toEqual(baseline.argv)
   })
+
+  it('Seatbelt: 字面保护条目按正则拒绝, 不依赖枚举清单', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = await sandbox.confine(['true'], { ...ww('/ws', []), readOnlyPatterns: '.git' })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile).toContain('(deny file-write* (regex #"^/ws(/.*)?/\\.git(/.*)?$"))')
+  })
+
+  it('Seatbelt: 会话旁路的 allow 仍排在正则拒绝之后', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = await sandbox.confine(['true'], {
+      ...ww('/ws', [], [], ['/ws/.git/inner']),
+      readOnlyPatterns: '.git',
+    })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile.lastIndexOf('(regex #"^/ws(/.*)?/\\.git(/.*)?$")'))
+      .toBeLessThan(profile.lastIndexOf('(allow file-write* (subpath "/ws/.git/inner"))'))
+  })
+
+  it('Seatbelt: 取反或通配的文本不生成正则拒绝 (退回枚举清单)', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const negated = await sandbox.confine(['true'], {
+      ...ww('/ws', []),
+      readOnlyPatterns: 'secrets/\n!secrets/public.pem',
+    })
+    expect(negated.argv[negated.argv.indexOf('-p') + 1]).not.toContain('(regex')
+    const glob = await sandbox.confine(['true'], { ...ww('/ws', []), readOnlyPatterns: 'build/*.log' })
+    expect(glob.argv[glob.argv.indexOf('-p') + 1]).not.toContain('(regex')
+  })
+
+  it('非 Seatbelt runner 不加正则拒绝 (挂载模型表达不了任意层级)', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const result = await sandbox.confine(['true'], { ...ww(realWs, []), readOnlyPatterns: '.git' })
+    expect(result.argv.join(' ')).not.toContain('(regex')
+  })
 })
