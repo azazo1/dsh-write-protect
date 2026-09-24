@@ -6,6 +6,7 @@
     "allowImportingTsExtensions": true,
     "lib": ["es2023", "dom"],
     "types": ["node"],
+    "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,

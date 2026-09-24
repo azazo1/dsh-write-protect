@@ -6,7 +6,11 @@
  */
 
 import type { PathPreview } from '../constants.ts'
-import type { ReactRuntime } from './section.ts'
+
+/** 客户端注入的 React runtime 形状 (module loader 的预载模块). */
+export interface ReactRuntime {
+  createElement: typeof import('react').createElement
+}
 
 /**
  * 渲染一个路径列表.
