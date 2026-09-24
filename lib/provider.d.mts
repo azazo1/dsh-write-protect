@@ -22,6 +22,11 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * `materialize()` 等完整异步展开; 本会话授权是审批阶段就定好的绝对路径, 与
    * 缓存里已有的清单一起从 policy 并进来. 单测直接塞 `readOnlyPaths` /
    * `writablePaths` 时沿用那份清单.
+   *
+   * 取 policy service 走 `ctx.get()` 而不是 `ctx.sandboxPolicy`: 官方
+   * `LocalSandboxProvider` 没有声明这个 inject, 直接读会在真实实例里抛
+   * "cannot get property ... without inject"; `get()` 不需要声明, 服务缺失时给
+   * undefined, 正好落到下面那份按 policy 清单的退路.
    */
   private overlayPaths;
   /**
