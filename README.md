@@ -2,7 +2,7 @@
 
 给 DSH 沙箱补上工作区里某一段路径的只读保护, 典型用途是不让模型改 `.git`. 也可以在 `workspace-write` 下声明工作区外的额外可写根, 让 bash 与 write / edit 写到相邻目录, 而不必切到 `danger-full-access`.
 
-工作区根还能放一份只读规则文件 (默认 `.readonly`), 与设置页的保护路径同语义; 任务要反复写同一片受保护区域时, 模型也可以申请本会话的可写授权 (见下文两节).
+工作区根还能放一份只读规则文件 (默认 `.readonly`), 与插件页配置里的保护路径同语义; 任务要反复写同一片受保护区域时, 模型也可以申请本会话的可写授权 (见下文两节).
 
 write / edit 工具在所有平台都会挡住保护路径, 并放行额外可写根. bash 等命令在 Linux / macOS 上同样生效; Windows 上 bash / pwsh 既挡不住 `.git`, 也拿不到额外可写根. 读取不受影响.
 
@@ -28,11 +28,11 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`.
 
-引擎版本线跟随 `@deepseek-ai/dsh-*` 的 `0.1.7-rc.1` (peerDependencies 同号). 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7-rc.1` 起走 volatile Config (设置页经 configForms 读写); 本插件的覆写与配置面都按这条线走, 还在更早引擎线上的部署请继续用 v0.1.1.
+引擎版本线跟随 `@deepseek-ai/dsh-*` 的 `0.1.7-rc.1` (peerDependencies 同号). 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7-rc.1` 起走 volatile Config (插件页的配置卡片经 configForms 读写); 本插件的覆写与配置面都按这条线走, 还在更早引擎线上的部署请继续用 v0.1.1.
 
 ## 配置
 
-保护路径, 额外可写根, 规则文件名, 各项上限与两个开关的默认值都定义在 `src/constants.ts` 的 `DEFAULT_*`, patch 的 policy 行与设置页部署 base 都由它们兜底; 需要部署级覆盖时在 patch 行显式给出字段 (整行替换, `mode` / `workspaceRoot` 必须带上):
+保护路径, 额外可写根, 规则文件名, 各项上限与三个开关的默认值都定义在 `src/constants.ts` 的 `DEFAULT_*`, patch 的 policy 行与插件页保存的值都由它们兜底; 需要部署级覆盖时在 patch 行显式给出字段 (整行替换, `mode` / `workspaceRoot` 必须带上):
 
 ```yml
 - id: dsh-write-protect-policy
@@ -79,7 +79,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 - 开启时在 Seatbelt profile 末尾追加 broker 拒绝形式 (见 "保护范围").
 - 关掉后命令按官方 profile 运行, 只影响 macOS, 只影响这一个加固; 保护路径与额外可写根照常.
-- 用户在设置页拨动开关后该值不再生效.
+- 用户在插件页拨动开关后该值不再生效.
 
 `readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` / `watchProtectedPaths` / `watchTtlMinMs` / `watchTtlMaxMs` 同理, 是只读规则文件, 可写申请与命令侧刷新的部署 base (见后两节), 用户保存过对应字段后该值不再生效.
 
@@ -93,11 +93,11 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 `src/readonly-file.ts` 负责工作区只读规则文件的读取与缓存, `src/path-expand.ts` 负责额外可写根的字面路径展开, `src/request-writable-path.ts` 是可写申请的授权表与 `request_writable_path` 工具.
 
-## 设置页
+## 插件页配置
 
-<img src="https://raw.githubusercontent.com/azazo1/dsh-write-protect/HEAD/docs/screenshots/settings-page.png" alt="写入保护设置页" width="520">
+<img src="https://raw.githubusercontent.com/azazo1/dsh-write-protect/HEAD/docs/screenshots/settings-page.png" alt="写入保护插件页配置" width="520">
 
-Web Settings 侧边栏的 "写入保护" 页面有五块内容: 保护路径 (gitignore 语义), 额外可写根 (字面路径), 只读规则文件名与两个上限, "模型申请可写路径" 开关, 以及 macOS broker 加固开关. 保存后实时生效并持久化:
+插件页里 dsh-write-protect 卡片上的配置表单, 从上到下是: 保护路径与额外可写根两个多行文本, 工作区只读规则文件名与最多条目数, 单会话可写授权上限, macOS broker 逃逸加固, 模型申请可写路径, 监听工作区变化, 以及刷新下界与上界两个毫秒值. 草稿只留在卡片里, 点 "保存" 才写进 profile 的 patch 层并实时生效; 预览面板按当前草稿展开, 不必先保存:
 
 ```text
 # 保护路径
@@ -123,7 +123,7 @@ $HOME/scratch
 
 ## 只读规则文件
 
-工作区根可以放一份与 "保护路径" 同语义的规则文件 (默认 `.readonly`, 可在设置页改名或置空关闭), 逐行追加在设置页文本之后:
+工作区根可以放一份与 "保护路径" 同语义的规则文件 (默认 `.readonly`, 可在插件页配置里改名或置空关闭), 逐行追加在保护路径文本之后:
 
 ```text
 # <工作区根>/.readonly
@@ -186,9 +186,9 @@ SBPL 按 last-match-wins 解释, 追加在末尾才能盖过 `(allow default)`. 
 
 加固只做收紧, 不放宽任何位置; 常规命令 (node, git, pnpm, python, curl, tar, rsync 等) 不受影响.
 
-设置页的 "macOS broker 逃逸加固" 开关与 patch 的 `hardenBroker` 控制这一个加固是否生效, 缺省开启. 关掉后 provider 原样返回官方 argv, 适合确实需要从沙箱内驱动宿主 GUI 的场景; 关掉即恢复可以被 `open` 打穿的状态. 保护路径与额外可写根的叠加不受这个开关影响.
+插件页的 "macOS broker 逃逸加固" 开关与 patch 的 `hardenBroker` 控制这一个加固是否生效, 缺省开启. 关掉后 provider 原样返回官方 argv, 适合确实需要从沙箱内驱动宿主 GUI 的场景; 关掉即恢复可以被 `open` 打穿的状态. 保护路径与额外可写根的叠加不受这个开关影响.
 
-patch 配置和设置页文本走同一套解析.
+patch 配置和插件页文本走同一套解析.
 
 ### 边界与已知限制
 
@@ -201,7 +201,7 @@ patch 配置和设置页文本走同一套解析.
 - **正则拒绝只覆盖字面条目, 且遇到 `!` 就整体放弃**: 含 `*` `?` `[` 或 `\` 的条目仍走枚举清单; 文本里只要出现 `!` 取反, 命令侧就退回纯枚举 (纯 deny 表达不了 last-match-wins). 目录标记条目在正则通道上不区分目标是文件还是目录, 同名文件也会被一并挡住, 属于收紧.
 - **尾部 `/**` 按那个目录本身保护**: 和保护其下全部后代等价, 同时避免枚举全部后代, 代价是该目录自己也写不了.
 - **规则文件的条目同样受缓存窗口影响**: 规则文件内容按 1 秒 TTL 重读, 改完最迟 1 秒后按新内容判定; 新增的匹配路径还要等下一次枚举 (60 秒 TTL) 才会进命令沙箱的清单, write / edit 侧立刻按新条目判定.
-- **授权是会话级内存态**: `request_writable_path` 得到的授权不跨会话, 也不写配置文件; 需要长期生效的额外可写根请写设置页或 patch.
+- **授权是会话级内存态**: `request_writable_path` 得到的授权不跨会话, 也不写配置文件; 需要长期生效的额外可写根请写插件页配置或 patch.
 - **授权在 bwrap 上要求路径真实存在**: 命令侧要把授权子树 bind 回可写, bwrap 要求挂载源存在; 还不存在的授权路径在命令侧要等它被创建出来 (write / edit 与 Seatbelt 不受这条限制).
 - **Landlock 上没有命令侧的授权**: 纯 allow-list 无法表达"父目录只读, 其中一棵子树可写", 强行加 `--rw` 会连上方一起放开, 因此这种 runner 下授权只作用于 write / edit (告警一次).
 - 指向保护目录内部的符号链接会被拒绝, 指向外部的不受影响.
@@ -221,7 +221,7 @@ just verify     # 以上全流程 + 打包预览
 | 文件 | 职责 | 依赖 |
 |---|---|---|
 | `src/gitignore.ts` | gitignore 语义的解析、编译与**逐路径匹配** (含 `PatternSet.match`), write / edit 围栏与可写申请的保护判定共用 | 纯字符串/正则, **零运行时依赖** |
-| `src/patterns.ts` | 把模式**异步枚举**成具体路径, 供命令沙箱与设置页预览使用 (另有额外可写根的字面路径解析) | `node:fs/promises`、`canonicalPath` |
+| `src/patterns.ts` | 把模式**异步枚举**成具体路径, 供命令沙箱与预览面板使用 (另有额外可写根的字面路径解析) | `node:fs/promises`、`canonicalPath` |
 | `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱 policy (含规则文件与授权)、进程沙箱 argv 叠加 | DSH 引擎 |
 
 `src/readonly-file.ts` 读取并校验工作区只读规则文件, `src/request-writable-path.ts` 是 `request_writable_path` 工具与会话授权表, `src/path-expand.ts` 负责额外可写根的字面路径展开 (`~` / 环境变量 / 平台差异).

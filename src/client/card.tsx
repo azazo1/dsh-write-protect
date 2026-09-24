@@ -129,50 +129,50 @@ export function WriteProtectSettingsCard(props: WriteProtectSettingsCardProps) {
       />
       {numberField(
         'plugin-config-write-protect-max-entries',
-        '规则文件条目上限',
-        '只读规则文件最多读入多少条, 防止超大文件拖慢启动.',
+        '最多条目数',
+        '只读规则文件最多读入多少条, 超过上限的部分丢弃并告警.',
         MAX_READONLY_ENTRIES_FIELD,
         state.maxReadOnlyEntries,
       )}
       {numberField(
         'plugin-config-write-protect-max-grants',
-        '会话授权条数上限',
-        '单个会话里最多保留多少条已批准的可写授权.',
+        '单会话可写授权上限',
+        '本会话内存里的可写授权最多保留多少条.',
         MAX_GRANTS_FIELD,
         state.maxGrants,
       )}
       {switchField(
         'plugin-config-write-protect-harden',
-        '加固 broker',
-        '开启后对写保护的 broker 额外收紧权限.',
+        'macOS broker 逃逸加固',
+        '在 Seatbelt profile 末尾追加拒绝 open, 只收紧不放宽; 仅 macOS 生效.',
         HARDEN_BROKER_FIELD,
         state.hardenBroker,
       )}
       {switchField(
         'plugin-config-write-protect-requests',
-        '允许申请可写授权',
-        '允许模型通过 request_writable_path 向你申请工作区外的可写路径.',
+        '模型申请可写路径',
+        '开启后提示词会引导模型在需要反复写受保护区域时调用 request_writable_path, 由你在审批弹窗里逐次决定.',
         ALLOW_REQUESTS_FIELD,
         state.allowWritableRequests,
       )}
       {switchField(
         'plugin-config-write-protect-watch',
-        '监视被保护路径',
-        '监视被保护路径的改动, 命中时刷新保护规则.',
+        '监听工作区变化',
+        '只给正在运行 agent 的会话装递归监听, 一变就重算命令侧清单; 装不上时退回纯时间兜底.',
         WATCH_FIELD,
         state.watchProtectedPaths,
       )}
       {numberField(
         'plugin-config-write-protect-watch-min',
-        '监视刷新最短间隔 (毫秒)',
-        '两次刷新之间至少间隔多久.',
+        '刷新下界 (毫秒)',
+        '没有事件时兜底重算的间隔下界.',
         WATCH_TTL_MIN_FIELD,
         state.watchTtlMinMs,
       )}
       {numberField(
         'plugin-config-write-protect-watch-max',
-        '监视刷新最长间隔 (毫秒)',
-        '两次刷新之间最多间隔多久.',
+        '刷新上界 (毫秒)',
+        '没有事件时兜底重算的间隔上界.',
         WATCH_TTL_MAX_FIELD,
         state.watchTtlMaxMs,
       )}
