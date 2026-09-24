@@ -50,7 +50,7 @@ describe('client bundle loader 注册', () => {
       if (id === 'react') return { createElement: () => null, useState: () => [null, () => {}], useSyncExternalStore: () => '' }
       throw new Error(`unexpected require: ${id}`)
     })
-    expect(moduleExports.inject).toContain('settingsScope')
+    expect(moduleExports.inject).toContain('configForms')
     expect(moduleExports.inject).toContain('slots')
     expect(moduleExports.inject).toContain('sessions')
     expect(typeof moduleExports.apply).toBe('function')

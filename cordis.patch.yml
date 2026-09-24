@@ -10,7 +10,7 @@
 # applies changes live; no `dsh web` restart is needed for config edits.
 #
 # The patch swaps the stock sandbox rows for this package's own:
-#   - `sandbox-policy`        -> policy.ts   (resolve() 注入 readOnlyPaths)
+#   - `sandbox-policy`        -> policy.ts   (resolve() 注入 readOnlyPaths / writablePaths)
 #   - `fs-sandbox`            -> fs.ts       (write/edit 拒绝保护路径, 全平台)
 #   - `sandbox` (linux/darwin) -> provider.ts (bwrap ro-bind / Seatbelt deny 追加)
 #
@@ -30,10 +30,13 @@
   disabled: !!js process.platform === 'linux' || process.platform === 'darwin'
 - insert:
     # 主入口: policy 半区 (package main, 同时是 client 半区的声明标记).
-    # `readOnlyPaths` / `writablePaths` 不在此声明: 默认值由 schema 从
-    # src/constants.ts 兜底 (保护 `.git`, 额外可写根为空); 用户在 Web 设置页
-    # "写入保护" 保存的文本会覆盖部署 base 并实时生效. 需要部署级覆盖时在此
-    # 显式给出数组 (整行替换, mode/workspaceRoot 必须带上).
+    # `readOnlyPaths` / `writablePaths` / `hardenBroker` 与工作区规则文件相关
+    # 的 `readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` /
+    # `allowWritableRequests` 都不在此声明:
+    # 默认值由 schema 从 src/constants.ts 兜底 (保护 `.git`, 额外可写根为空,
+    # 规则文件 `.readonly`, 上限 200 / 8); 用户在 Web 设置页 "写入保护" 保存的
+    # 值会覆盖部署 base 并实时生效. 需要部署级覆盖时在此显式给出这些字段
+    # (整行替换, mode/workspaceRoot 必须带上).
     - id: dsh-write-protect-policy
       name: dsh-write-protect
       config:

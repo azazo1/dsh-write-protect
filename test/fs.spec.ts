@@ -23,12 +23,41 @@ let ctx: Context
 let fs: WriteProtectFileSystem
 let fiber: Awaited<ReturnType<Context['plugin']>>
 
-async function boot(mode: SandboxMode, readOnlyPaths: string[], writablePaths: string[] = []): Promise<void> {
+/**
+ * 会话作用域的 policy: 生产路径上 write/edit 工具会把解析好的会话 policy 传给 fs
+ * (见官方 tool-fs). 这里走插件自己的 resolveForSession, 与审批工具同一条通道, 因此
+ * 不必拉起会话运行时 (官方 resolve 的会话分支要读真实会话日志做投影).
+ */
+function sessionPolicy() {
+  // ctx.sandboxPolicy 的类型是官方服务形态, 这里按插件服务取用同一条会话通道.
+  return (ctx.sandboxPolicy as WriteProtectPolicyService).resolveForSession('session-1', workspace)
+}
+
+/**
+ * 把 fs 包成"会话作用域"的形态: 各用例不必手写第五个参数; 显式传了 policy 的用例
+ * 照旧. 没有会话根时本插件不展开保护路径, 所以规格里必须带会话.
+ */
+function sessionFs(): WriteProtectFileSystem {
+  const raw = ctx.fs as WriteProtectFileSystem
+  const bound = Object.create(raw) as WriteProtectFileSystem
+  bound.writeText = (t, content, expected, signal, policy) =>
+    raw.writeText(t, content, expected, signal, policy ?? sessionPolicy())
+  bound.editText = (t, edit, expected, signal, policy) =>
+    raw.editText(t, edit, expected, signal, policy ?? sessionPolicy())
+  return bound
+}
+
+async function boot(
+  mode: SandboxMode,
+  readOnlyPaths: string[],
+  writablePaths: string[] = [],
+  readonlyFileName = '.readonly',
+): Promise<void> {
   ctx = new Context()
   await ctx.plugin(SessionProjectionRegistry)
-  await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths, writablePaths })
+  await ctx.plugin(WriteProtectPolicyService, { mode, workspaceRoot: workspace, readOnlyPaths, writablePaths, readonlyFileName })
   fiber = await ctx.plugin(WriteProtectFileSystem, { cwd: workspace })
-  fs = ctx.fs as WriteProtectFileSystem
+  fs = sessionFs()
 }
 
 beforeEach(() => {
@@ -80,14 +109,23 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
     })
   })
 
-  it('danger-full-access 下普通文件可写, 保护路径仍被拒绝', async () => {
+  it('danger-full-access 下普通文件与保护路径都放行 (该模式不设限)', async () => {
     await boot('danger-full-access', ['gitdir'])
     mkdirSync(join(workspace, 'gitdir'))
     await fs.writeText(target(join(workspace, 'free.txt')), 'ok')
-    await expect(fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x')).rejects.toMatchObject({
-      code: 'FS_SANDBOX_DENIED',
-    })
+    await fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x')
     expect(await readFile(join(workspace, 'free.txt'), 'utf8')).toBe('ok')
+    expect(await readFile(join(workspace, 'gitdir', 'config'), 'utf8')).toBe('x')
+  })
+
+  it('danger-full-access 下规则文件与规则文件自身的硬保护都不介入', async () => {
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    mkdirSync(join(workspace, 'vendor'))
+    await boot('danger-full-access', [])
+    await fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')
+    await fs.writeText(target(join(workspace, '.readonly')), 'vendor\n')
+    expect(await readFile(join(workspace, 'vendor', 'lib.js'), 'utf8')).toBe('x')
+    expect(await readFile(join(workspace, '.readonly'), 'utf8')).toBe('vendor\n')
   })
 
   it('read-only 模式由官方围栏全量拒绝, message 不来自本插件', async () => {
@@ -132,7 +170,7 @@ describe('WriteProtectFileSystem write/edit 保护', () => {
     await boot('workspace-write', ['gitdir', 'gitdir', `//${join(workspace, 'dist')}`])
     const policyService = ctx.sandboxPolicy as WriteProtectPolicyService
     await policyService.materialize(workspace)
-    const policy = policyService.resolve()
+    const policy = sessionPolicy()
     expect(policy.readOnlyPaths).toEqual([join(workspace, 'gitdir'), join(workspace, 'dist')])
   })
 })
@@ -234,7 +272,72 @@ describe('WriteProtectFileSystem 额外可写根', () => {
     const extra = join(base, 'extra')
     mkdirSync(extra)
     await boot('workspace-write', [], ['../extra', 'src'])
-    const policy = ctx.sandboxPolicy.resolve()
+    const policy = sessionPolicy()
     expect(policy.writablePaths).toEqual([realpathSync(extra)])
+  })
+})
+
+describe('WriteProtectFileSystem 与只读规则文件', () => {
+  it('规则文件里的条目在 write/edit 侧同样拒绝写入', async () => {
+    mkdirSync(join(workspace, 'vendor'))
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    await boot('workspace-write', [])
+    await expect(fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    // 其余位置照常可写.
+    await fs.writeText(target(join(workspace, 'ok.txt')), 'ok')
+    expect(await readFile(join(workspace, 'ok.txt'), 'utf8')).toBe('ok')
+  })
+
+  it('规则文件本身永远不可写 (唯一不接受放行的路径)', async () => {
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    await boot('workspace-write', [])
+    const error = await fs.writeText(target(join(workspace, '.readonly')), 'x').then(
+      () => undefined,
+      (caught: unknown) => caught,
+    )
+    expect((error as NodeJS.ErrnoException).code).toBe('FS_SANDBOX_DENIED')
+    expect((error as Error).message).toContain('read-only by design')
+  })
+
+  it('规则文件关闭识别 (文件名为空) 后可以正常写入', async () => {
+    await boot('workspace-write', [], [], '')
+    await fs.writeText(target(join(workspace, '.readonly')), 'vendor\n')
+    expect(await readFile(join(workspace, '.readonly'), 'utf8')).toBe('vendor\n')
+  })
+
+  it('设置页的保护路径被本会话旁路放行, 但规则文件自身仍被挡住', async () => {
+    mkdirSync(join(workspace, 'gitdir'))
+    await boot('workspace-write', ['gitdir'])
+    const policy = sessionPolicy()
+    const granted = { ...policy, writableOverrides: [join(workspace, 'gitdir')] }
+    await fs.writeText(target(join(workspace, 'gitdir', 'config')), 'x', undefined, undefined, granted)
+    expect(await readFile(join(workspace, 'gitdir', 'config'), 'utf8')).toBe('x')
+    // 旁路不能放开规则文件: 它是规则来源.
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    const rules = sessionPolicy().rulesFilePath
+    expect(rules).toBe(join(workspace, '.readonly'))
+    await expect(
+      fs.writeText(target(join(workspace, '.readonly')), 'x', undefined, undefined, { ...granted, writableOverrides: [workspace] }),
+    ).rejects.toMatchObject({ code: 'FS_SANDBOX_DENIED' })
+  })
+
+  it('规则文件条目换成新内容后, 下一次写入按新内容判定', async () => {
+    mkdirSync(join(workspace, 'vendor'))
+    writeFileSync(join(workspace, '.readonly'), 'vendor\n')
+    await boot('workspace-write', [])
+    await expect(fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    // 规则文件内容变了: 缓存过期后 (1s TTL) 重新读到的条目生效.
+    writeFileSync(join(workspace, '.readonly'), 'other\n')
+    mkdirSync(join(workspace, 'other'))
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    await expect(fs.writeText(target(join(workspace, 'other', 'a.txt')), 'x')).rejects.toMatchObject({
+      code: 'FS_SANDBOX_DENIED',
+    })
+    await fs.writeText(target(join(workspace, 'vendor', 'lib.js')), 'x')
+    expect(await readFile(join(workspace, 'vendor', 'lib.js'), 'utf8')).toBe('x')
   })
 })
