@@ -10,6 +10,8 @@ write / edit 工具在所有平台都会挡住保护路径, 并放行额外可�
 
 ## 安装
 
+Web 端装进 `web` profile:
+
 ```shell
 dsh plugin --profile web add azazo1/dsh-write-protect
 ```
@@ -26,9 +28,11 @@ GitHub Release 同时挂不带版本号的预构建包, 安装时跳过 `allowBu
 dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/releases/latest/download/dsh-write-protect.tgz
 ```
 
-安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`.
+桌面端装进 `desktop` profile. 它由 Electron 应用独占管理, `dsh plugin` 会拒绝 `--profile desktop`, 所以要用应用内的插件管理器: 在插件页的安装入口填上面命令里对应的包名或 tarball 地址. 装上后重启应用, 窗口刷新一次.
 
-引擎版本线跟随 `@deepseek-ai/dsh-*` 的 `0.1.7-rc.1` (peerDependencies 同号). 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7-rc.1` 起走 volatile Config (插件页的配置卡片经 configForms 读写); 本插件的覆写与配置面都按这条线走, 还在更早引擎线上的部署请继续用 v0.1.1.
+安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`. web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多起一个 Host 子进程并给 `<html>` 打上平台标记, 所以同一份包在两边通用, 不需要分别构建.
+
+引擎版本线要求 `@deepseek-ai/dsh-*` 不低于 `0.1.7-rc.2`, 且仍在 `0.1.x` 上 (peerDependencies 与 devDependencies 都写作 `>=0.1.7-rc.2 <0.2.0`). 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7` 起走 volatile Config (插件页的配置卡片经 configForms 读写); 本插件的覆写与配置面都按这条线走, 还在更早引擎线上的部署请继续用 v0.1.1.
 
 ## 配置
 
