@@ -49,6 +49,11 @@ export type GrantOutcome =
   | { readonly ok: true, readonly record: GrantRecord, readonly kind: GrantKind }
   | { readonly ok: false, readonly reason: string }
 
+/** `GrantsService.revoke()` 的结果. */
+export type RevokeOutcome =
+  | { readonly ok: true, readonly record: GrantRecord, readonly removed: Grant }
+  | { readonly ok: false, readonly reason: string }
+
 /**
  * 工具执行上下文里用到的会话形状 (只用到 id 与 header.cwd). `ToolRunContext` 上的
  * `agent` 由 agent loop 注入, 这里按结构取用; 交给官方审批服务时仍用 `exec.agent`
@@ -137,6 +142,40 @@ export class GrantsService {
     this.records.set(sessionId, record)
     this.onChange()
     return { ok: true, record, kind }
+  }
+
+  /** 某个会话当前持有的授权清单 (按批准顺序). */
+  listOf(sessionId: string): readonly Grant[] {
+    return this.recordOf(sessionId).grants
+  }
+
+  /**
+   * 撤回一条授权: 目标重新落回当前的保护判定. 这是"手动撤回"那条通道的服务端
+   * 动作, 与 `grant()` 对称 —— 只删记录, 不碰设置页配置, 也不碰展开缓存 (授权
+   * 本来就不进缓存, 每次 `resolve()` 现读).
+   *
+   * 只按路径精确匹配: 面板列出的就是这些原样路径, 作用于某一棵子树的授权要撤
+   * 就撤那条授权本身, 不支持"撤掉父授权的一部分".
+   * @param sessionId - 授权所属会话.
+   * @param path - canonical 绝对路径.
+   * @returns 成功时给出被删掉的授权与删后记录, 路径不在表里时给出原因.
+   */
+  revoke(sessionId: string, path: string): RevokeOutcome {
+    const current = this.recordOf(sessionId)
+    const removed = current.grants.find(grant => grant.path === path)
+    if (removed === undefined) {
+      return { ok: false, reason: `this session holds no write grant on "${path}"` }
+    }
+    const grants = current.grants.filter(grant => grant.path !== path)
+    const record: GrantRecord = {
+      extraRoots: current.extraRoots.filter(root => root !== path),
+      overrides: current.overrides.filter(root => root !== path),
+      grants,
+    }
+    if (grants.length === 0) this.records.delete(sessionId)
+    else this.records.set(sessionId, record)
+    this.onChange()
+    return { ok: true, record, removed }
   }
 
   /** 按工作区根查找已授权的会话记录 (设置页预览用: 请求体只带 cwd). */

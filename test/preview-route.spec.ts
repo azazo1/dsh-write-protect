@@ -5,14 +5,15 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { resolve as resolvePath, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PREVIEW_PATH } from '../src/constants.ts'
-import { mountPreviewRoute, type PreviewConnection } from '../src/preview-route.ts'
+import { mountPreviewRoute } from '../src/preview-route.ts'
+import type { FetchRouteConnection } from '../src/connection.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
 type Handler = (request: Request) => Promise<Response>
 
-function fakeConnection(): { connection: PreviewConnection, handler: () => Handler } {
+function fakeConnection(): { connection: FetchRouteConnection, handler: () => Handler } {
   let handler: Handler | undefined
-  const connection: PreviewConnection = {
+  const connection: FetchRouteConnection = {
     fetch: {
       register(route) {
         expect(route.path).toBe(PREVIEW_PATH)

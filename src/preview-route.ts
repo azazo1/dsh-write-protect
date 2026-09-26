@@ -11,23 +11,13 @@
 
 import { resolve as resolvePath } from 'node:path'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
+import type { FetchRouteConnection } from './connection.ts'
 import { PREVIEW_PATH } from './constants.ts'
 import { previewPaths } from './preview.ts'
 import { EMPTY_READ_ONLY_FILE, type ReadOnlyFile } from './readonly-file.ts'
 import type { Grant } from './request-writable-path.ts'
 
 const MAX_BODY_BYTES = 256 * 1024
-
-/** Connection.fetch.register 的最小形状. */
-export interface PreviewConnection {
-  fetch: {
-    register(route: {
-      path: string
-      methods: readonly string[]
-      fetch: (request: Request) => Promise<Response>
-    }): () => void | Promise<void>
-  }
-}
 
 /**
  * 预览需要的插件侧信息: 生效的规则文件名与其读取器, 以及按工作区根回查的本会话
@@ -97,7 +87,7 @@ function readPreviewFile(host: PreviewPolicyHost | undefined, workspaceRoot: str
  * @param host - 可选的插件侧信息 (规则文件与授权列表); 缺省时这两块按空处理.
  */
 export function mountPreviewRoute(
-  connection: PreviewConnection,
+  connection: FetchRouteConnection,
   host?: PreviewPolicyHost,
 ): () => void {
   const dispose = connection.fetch.register({

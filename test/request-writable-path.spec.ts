@@ -352,4 +352,31 @@ describe('GrantsService', () => {
     limit = 2
     expect(service.grant('s1', '/b', 'extra-root').ok).toBe(true)
   })
+
+  it('revoke 同时清掉记录与对应的那一侧清单', () => {
+    const service = new GrantsService(() => 8, () => {})
+    service.grant('s1', '/outside', 'extra-root')
+    service.grant('s1', '/ws/protected', 'override')
+    const outcome = service.revoke('s1', '/ws/protected')
+    expect(outcome.ok).toBe(true)
+    expect(outcome.ok ? outcome.removed.kind : '').toBe('override')
+    expect(service.recordOf('s1')).toEqual({
+      extraRoots: ['/outside'],
+      overrides: [],
+      grants: [{ path: '/outside', kind: 'extra-root' }],
+    })
+    expect(service.revoke('s1', '/outside').ok).toBe(true)
+    expect(service.listOf('s1')).toEqual([])
+  })
+
+  it('revoke 只认精确路径, 也撤不掉别的会话里那条', () => {
+    const service = new GrantsService(() => 8, () => {})
+    service.grant('s1', '/ws/protected', 'override')
+    service.grant('s2', '/ws/protected', 'override')
+    const missing = service.revoke('s1', '/ws/protected/sub')
+    expect(missing.ok).toBe(false)
+    expect(missing.ok ? '' : missing.reason).toContain('/ws/protected/sub')
+    expect(service.revoke('s2', '/ws/protected').ok).toBe(true)
+    expect(service.listOf('s1')).toHaveLength(1)
+  })
 })

@@ -31,6 +31,25 @@ const CSS_TEXT = `
 .dsh-wp-list { margin: 0; padding: 0 0 0 18px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55; color: var(--dsw-alias-label-primary); }
 .dsh-wp-empty { margin: 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .dsh-wp-preview-label { margin: 8px 0 4px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+.dsh-wp-tab { display: flex; flex-direction: column; gap: 10px; box-sizing: border-box; padding: 16px; overflow: auto; }
+.dsh-wp-tab-head { display: flex; align-items: center; gap: 8px; }
+.dsh-wp-tab-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--dsw-alias-label-primary); }
+.dsh-wp-button { flex: none; height: 30px; padding: 0 14px; border-radius: 8px; border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; cursor: pointer; }
+.dsh-wp-button:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary); }
+.dsh-wp-button:disabled { opacity: 0.45; cursor: default; }
+.dsh-wp-status { margin: 0; font-size: 12px; line-height: 1.6; color: var(--dsw-alias-state-business-primary); }
+.dsh-wp-warning { margin: 0; padding: 8px 10px; border-radius: 8px; border: 0.5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-3); font-size: 12px; line-height: 1.6; color: var(--dsw-alias-label-secondary); }
+.dsh-wp-grants { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.dsh-wp-grant { display: flex; align-items: flex-start; gap: 8px; padding: 10px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }
+.dsh-wp-grant-path { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary); }
+.dsh-wp-grant-kind { flex: none; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }
+.dsh-wp-grant-action { flex: none; padding: 0; border: none; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; }
+.dsh-wp-grant-action:hover:not(:disabled) { color: var(--dsw-alias-state-error-primary); }
+.dsh-wp-grant-action:disabled { opacity: 0.45; cursor: default; }
+.dsh-wp-add { display: flex; align-items: center; gap: 8px; }
+.dsh-wp-input { flex: 1; min-width: 0; height: 30px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; border: 0.5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-3); color: var(--dsw-alias-label-primary); font: inherit; font-size: 13px; }
+.dsh-wp-input:focus-visible { outline: none; border-color: var(--dsw-alias-brand-primary); }
+.dsh-wp-input:disabled { color: var(--dsw-alias-label-tertiary); }
 `
 
 /** 注入卡片样式一次; 重复调用为空操作. */

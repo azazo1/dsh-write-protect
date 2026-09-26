@@ -27,6 +27,8 @@ function fakePlatformModule(id: string): unknown {
     return {
       createElement: () => null,
       useState: () => [null, () => {}],
+      useEffect: () => {},
+      useCallback: (fn: unknown) => fn,
       useSyncExternalStore: () => '',
     }
   }
@@ -101,5 +103,8 @@ describe('client bundle loader 注册', () => {
     expect(code).toContain('dsh-write-protect-policy')
     expect(code).toContain('plugins.bundle.config')
     expect(code).toContain('/api/dsh-write-protect.preview')
+    // 会话区的写入权限 tab: 槽位名与它的 Host 路由一起内联.
+    expect(code).toContain('conversation.view')
+    expect(code).toContain('/api/dsh-write-protect.grants')
   })
 })

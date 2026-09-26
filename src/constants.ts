@@ -133,8 +133,48 @@ export const PROMPT_CONTEXT_ORDER = 112
 /** 设置页预览的 Host Fetch 路由, 走 `/api` 鉴权通道. POST JSON. */
 export const PREVIEW_PATH = '/api/dsh-write-protect.preview'
 
+/** 会话写入权限面板的 Host Fetch 路由, 走同一个 `/api` 鉴权通道. POST JSON. */
+export const GRANTS_PATH = '/api/dsh-write-protect.grants'
+
 /** 一次可写授权的性质. */
 export type GrantKind = 'extra-root' | 'override'
+
+/** 会话写入权限面板支持的动作. */
+export type GrantsAction = 'list' | 'add' | 'revoke'
+
+/** 面板请求体: 会话身份 + 动作 (+ add / revoke 的目标路径). */
+export interface GrantsRequest {
+  /** 目标会话 id (与 agent id 同一个值). */
+  sessionId: string
+  /** 该会话日志里的 cwd: 会话还没被 resolve 过时, Host 靠它定位工作区根. */
+  cwd?: string
+  action: GrantsAction
+  /** add / revoke 的路径原文. add 支持 `~` / `$VAR` / `..` / 相对工作区, revoke 用列表里那条原样路径. */
+  path?: string
+}
+
+/** 面板响应体: 动作执行后的授权清单与本次动作的结果. */
+export interface GrantsResponse {
+  /** 会话工作区根 (canonical); `add` 的相对路径按它解析. */
+  workspaceRoot: string
+  /** 当前保护模式: `read-only` 下新加的授权要等切模式才生效. */
+  mode: string
+  /** 单会话授权条数上限 (设置项 `maxGrants`). */
+  maxGrants: number
+  /** 该会话当前持有的授权. */
+  grants: readonly GrantPreview[]
+  /** 本次动作造成的变更; `list` 或缺省时表示只是读取. */
+  changed?: GrantChange
+  /** 撤回通知的投递结果; 仅 `revoke` 会带. */
+  notice?: 'queued' | 'no-session'
+}
+
+/** 面板里一次成功的改动. */
+export interface GrantChange {
+  readonly path: string
+  readonly kind: GrantKind
+  readonly action: 'add' | 'revoke'
+}
 
 /** 预览里的规则文件信息: 路径缺省表示该工作区没有这份文件. */
 export interface ReadOnlyFilePreview {
@@ -157,7 +197,7 @@ export interface PathPreview {
   warnings: readonly string[]
   /** 工作区只读规则文件 (部署配置决定是否识别, 关闭时为关闭说明). */
   readOnlyFile?: ReadOnlyFilePreview
-  /** 本会话已批准的可写授权; 只读展开, 不能在本页撤销. */
+  /** 本会话已批准的可写授权; 本页只列不改, 撤回在会话区的 "写入权限" tab 上. */
   grants?: readonly GrantPreview[]
 }
 

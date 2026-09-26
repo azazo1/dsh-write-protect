@@ -1,5 +1,6 @@
 /**
- * 从 client sessions store 取当前选中会话的 cwd.
+ * 从 client sessions store 取会话的 cwd: 设置页预览要的是"当前选中"的那条, 会话
+ * 区的写入权限面板要的是"我正看着"的那条 (槽位给的是会话 id).
  *
  * sessions store 本身不表达"选中", 选中态由持有方写在列表行的 `retainedBy` 上:
  * 主视图 (workspace navigation) 用 `mainView` 持有当前会话, 所以被 `mainView`
@@ -49,7 +50,27 @@ function selectedSessionId(snap: SessionListSnap): string | undefined {
 export function sessionCwdOf(sessions: SessionsLike | undefined): string | undefined {
   const snap = sessions?.list?.getSnapshot?.()
   if (snap === undefined) return undefined
-  let id = selectedSessionId(snap)
+  return walkToCwd(snap, selectedSessionId(snap))
+}
+
+/**
+ * 指定会话的 cwd; 该会话与其祖先链都没有 cwd 时返回 undefined.
+ *
+ * 会话区的写入权限面板拿到的是当前正在看的那条会话 id (槽位的标准 props), 它可
+ * 能不是主视图持有的那条 (例如从侧栏打开的子 agent 会话), 所以这里按 id 定位,
+ * 而不是复用 `sessionCwdOf` 的选中判定.
+ * @param sessions - client 的 sessions 服务, 缺省则无法识别.
+ * @param sessionId - 目标会话 id.
+ */
+export function sessionCwdById(sessions: SessionsLike | undefined, sessionId: string | undefined): string | undefined {
+  const snap = sessions?.list?.getSnapshot?.()
+  if (snap === undefined || sessionId === undefined || sessionId.length === 0) return undefined
+  return walkToCwd(snap, sessionId)
+}
+
+/** 沿 `parentId` 向上找第一个带 cwd 的会话 (子 agent 的摘要不一定自带 cwd). */
+function walkToCwd(snap: SessionListSnap, from: string | undefined): string | undefined {
+  let id = from
   for (let hop = 0; id !== undefined && hop < PARENT_HOPS; hop += 1) {
     const info = snap.byId?.[id]
     const cwd = typeof info?.cwd === 'string' ? info.cwd.trim() : ''

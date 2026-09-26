@@ -17,6 +17,11 @@
  * `writablePaths`, 工作区内的保护旁路进 `writableOverrides`; 两者都只在本会话
  * 内存里存在. 同时注册一个 systemPrompt context, 让模型在写入之前就知道哪些
  * 模式受保护, 哪些额外根可写, 以及怎么申请.
+ *
+ * 同一条授权也能由用户手动收回: 会话区的 "写入权限" tab 走 Host 的 `/api` 路由
+ * (见 `grants-route.ts`), 列出本会话的授权, 手动加临时可写根, 以及撤回 —— 撤回
+ * 之后由 `grant-notice.ts` 给该会话投一条消息, 让模型知道"是用户撤的", 而不只是
+ * 发现提示词里那份清单少了一行.
  * @module dsh-write-protect/policy
  */
 
@@ -44,8 +49,11 @@ import {
   isValidReadonlyFileName,
 } from './constants.ts'
 import { compileGitignore } from './gitignore.ts'
+import type { FetchRouteConnection } from './connection.ts'
+import { agentsPortOf, notifyGrantRevoked, type WriteProtectAgents } from './grant-notice.ts'
+import { mountGrantsRoute, type GrantsPolicyHost } from './grants-route.ts'
 import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
-import { mountPreviewRoute, type PreviewConnection } from './preview-route.ts'
+import { mountPreviewRoute } from './preview-route.ts'
 import { EMPTY_READ_ONLY_FILE, ReadOnlyFileCache, mergeReadOnlyText, type ReadOnlyFile } from './readonly-file.ts'
 import { ExpansionRefresher, type ExpansionInputs, type ExpansionSnapshot } from './refresh.ts'
 import { GrantsService, registerRequestWritablePath, type GrantPolicyHost } from './request-writable-path.ts'
@@ -278,7 +286,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
             parts.push(`Session write grants that bypass write protection for the write/edit tools and for sandboxed commands: ${JSON.stringify(overrides)}.`)
           }
           if (this.currentLimits().allowWritableRequests) {
-            parts.push(`Extra write access is not granted by default. Call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} when the task will keep writing the same protected path or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on); a single file is written with the ordinary write/edit tools, and if that write is denied, leave it at that. The user decides in an approval prompt, and the grant lasts only for this session.`)
+            parts.push(`Extra write access is not granted by default. Call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} when the task will keep writing the same protected path or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on); a single file is written with the ordinary write/edit tools, and if that write is denied, leave it at that. The user decides in an approval prompt, and the grant lasts only for this session. The user can also withdraw a grant at any time from the session's write-access panel; a withdrawn grant disappears from the lists above and you receive a notice naming the path.`)
           } else {
             parts.push('Extra write access is not granted by this deployment: do not ask for it.')
           }
@@ -303,10 +311,31 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     })
 
     ctx.inject(['connection'], (scope: Context) => {
-      const connection = (scope as Context & { connection: PreviewConnection }).connection
+      const connection = (scope as Context & { connection: FetchRouteConnection }).connection
       scope.effect(
         () => mountPreviewRoute(connection, this),
         'dsh-write-protect: preview route',
+      )
+      // 会话写入权限面板: 列授权, 手动加临时可写根, 撤回并通知该会话.
+      const grantsHost: GrantsPolicyHost = {
+        workspaceRootOfSession: (sessionId, cwd) => this.workspaceRootOfSession(sessionId, cwd),
+        resolve: (sessionId, cwd) => this.resolveForSession(sessionId, cwd),
+        maxGrants: () => this.currentLimits().maxGrants,
+        rulesFilePath: workspaceRoot => this.rulesFilePath(workspaceRoot),
+        notifyRevoked: (sessionId, grant) => {
+          try {
+            return notifyGrantRevoked(this.agentsPort(), sessionId, grant)
+          } catch (error: unknown) {
+            // 会话可能刚好在"取到 agent"与"投递"之间销毁. 撤回已经生效, 不能因为
+            // 通知投不出去就把整次请求报成失败, 那样面板会显示撤回没成功.
+            this.warn(`could not deliver the revoke notice to session "${sessionId}": ${error instanceof Error ? error.message : String(error)}`)
+            return 'no-session'
+          }
+        },
+      }
+      scope.effect(
+        () => mountGrantsRoute(connection, this.grants, grantsHost),
+        'dsh-write-protect: grants route',
       )
     })
   }
@@ -508,6 +537,15 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     // 申请的目标可能是目录 (模型要整棵子树), 也可能是文件或还不存在: gitignore 的
     // 目录标记条目只对目录生效, 因此这里按目标在磁盘上的实际情况判定.
     return compileGitignore(text).match(target, policy.workspaceRoot, isDirectory(target))?.entry.source
+  }
+
+  /**
+   * agents 端口 (撤回通知专用). 取用形状见 `grant-notice.ts`: 本插件只需要"按会话
+   * id 给 live agent 投一条消息", 因此用 `ctx.get()` 拿它并收窄类型 —— 组合里没有
+   * agents 服务时投递自然退化成 no-session, 撤回本身照常生效.
+   */
+  private agentsPort(): WriteProtectAgents | undefined {
+    return agentsPortOf(this.ctx)
   }
 
   /** 当前生效的规则文件条目上限, 会话授权上限, 可写申请开关与保鲜配置. */

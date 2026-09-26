@@ -1,7 +1,8 @@
-// sessionCwdOf: 设置页预览从 client sessions store 取当前选中会话的 cwd.
+// sessionCwdOf / sessionCwdById: 设置页预览要当前选中会话的 cwd, 会话区的写入
+// 权限 tab 要它自己那条会话的 cwd.
 
 import { describe, expect, it } from 'vitest'
-import { sessionCwdOf, type SessionListRow, type SessionsLike } from '../src/client/session-cwd.ts'
+import { sessionCwdById, sessionCwdOf, type SessionListRow, type SessionsLike } from '../src/client/session-cwd.ts'
 
 /** 被主视图持有的行 (界面上当前选中的会话). */
 function mainView(row: SessionListRow): SessionListRow {
@@ -51,5 +52,28 @@ describe('sessionCwdOf', () => {
       child: mainView({ parentId: 'parent' }),
       parent: {},
     }))).toBeUndefined()
+  })
+})
+
+describe('sessionCwdById', () => {
+  it('按 id 取 cwd, 不管它有没有被主视图持有', () => {
+    expect(sessionCwdById(sessions({
+      other: mainView({ cwd: '/ws/other' }),
+      child: { cwd: '/ws/child' },
+    }), 'child')).toBe('/ws/child')
+  })
+
+  it('该会话没有 cwd 时沿 parentId 向上找 (子 agent 的情形)', () => {
+    expect(sessionCwdById(sessions({
+      child: { parentId: 'parent' },
+      parent: { cwd: '/ws/app' },
+    }), 'child')).toBe('/ws/app')
+  })
+
+  it('没有 sessions 服务或 id 不给 / 查不到时返回 undefined', () => {
+    expect(sessionCwdById(undefined, 's1')).toBeUndefined()
+    expect(sessionCwdById(sessions({ s1: { cwd: '/ws' } }), undefined)).toBeUndefined()
+    expect(sessionCwdById(sessions({ s1: { cwd: '/ws' } }), '')).toBeUndefined()
+    expect(sessionCwdById(sessions({ s1: { cwd: '/ws' } }), 'missing')).toBeUndefined()
   })
 })

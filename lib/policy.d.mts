@@ -157,6 +157,15 @@ type GrantOutcome = {
   readonly ok: false;
   readonly reason: string;
 };
+/** `GrantsService.revoke()` 的结果. */
+type RevokeOutcome = {
+  readonly ok: true;
+  readonly record: GrantRecord;
+  readonly removed: Grant;
+} | {
+  readonly ok: false;
+  readonly reason: string;
+};
 /**
  * 会话级可写授权表. 键为会话 id; 会话结束后记录随 map 一起失效 (进程内存态).
  */
@@ -174,6 +183,20 @@ declare class GrantsService {
    * @param kind - 工作区外的额外根 (`extra-root`) 或保护旁路 (`override`).
    */
   grant(sessionId: string, path: string, kind: GrantKind): GrantOutcome;
+  /** 某个会话当前持有的授权清单 (按批准顺序). */
+  listOf(sessionId: string): readonly Grant[];
+  /**
+   * 撤回一条授权: 目标重新落回当前的保护判定. 这是"手动撤回"那条通道的服务端
+   * 动作, 与 `grant()` 对称 —— 只删记录, 不碰设置页配置, 也不碰展开缓存 (授权
+   * 本来就不进缓存, 每次 `resolve()` 现读).
+   *
+   * 只按路径精确匹配: 面板列出的就是这些原样路径, 作用于某一棵子树的授权要撤
+   * 就撤那条授权本身, 不支持"撤掉父授权的一部分".
+   * @param sessionId - 授权所属会话.
+   * @param path - canonical 绝对路径.
+   * @returns 成功时给出被删掉的授权与删后记录, 路径不在表里时给出原因.
+   */
+  revoke(sessionId: string, path: string): RevokeOutcome;
   /** 按工作区根查找已授权的会话记录 (设置页预览用: 请求体只带 cwd). */
   recordsForWorkspace(workspaceRoot: string, cwdOf: (sessionId: string) => string | undefined): readonly Grant[];
 }
@@ -412,6 +435,12 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * @returns 命中的模式原文, 未命中为 undefined.
    */
   protectedPatternFor(sessionId: string | undefined, cwd: string | undefined, target: string): string | undefined;
+  /**
+   * agents 端口 (撤回通知专用). 取用形状见 `grant-notice.ts`: 本插件只需要"按会话
+   * id 给 live agent 投一条消息", 因此用 `ctx.get()` 拿它并收窄类型 —— 组合里没有
+   * agents 服务时投递自然退化成 no-session, 撤回本身照常生效.
+   */
+  private agentsPort;
   /** 当前生效的规则文件条目上限, 会话授权上限, 可写申请开关与保鲜配置. */
   private currentLimits;
   /** 校验并回退规则文件名, 非法值告警一次. */

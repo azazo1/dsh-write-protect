@@ -2,6 +2,9 @@
  * 设置页预览面板: 列出展开后的生效路径与未生效告警, 以及工作区只读规则文件与
  * 本会话已批准的可写授权. 说明性的差异 (例如授权的两类性质) 放在条目的 hover
  * 提示里, 列表本身只给路径, 避免每行都挂一长串括号.
+ *
+ * 授权在这里只列不改: 撤回与手动添加都在会话区的 "写入权限" tab 上 (那里按会话
+ * 操作, 这里的预览按工作区聚合, 两者不是同一个视角).
  * @module dsh-write-protect/client/preview-panel
  */
 
@@ -86,6 +89,13 @@ export function WriteProtectPreviewPanel(
       '本会话没有已批准的可写授权',
       grants.map(grant => GRANT_TIPS[grant.kind] ?? ''),
     ),
+    grants.length === 0
+      ? null
+      : createElement(
+        'p',
+        { className: 'dsh-wp-hint' },
+        '要加临时可写根或撤回某条授权, 到会话区 (与 "对话" / "轨迹" 并排) 的 "写入权限" tab 里操作.',
+      ),
     createElement('p', { className: 'dsh-wp-preview-label' }, `未生效 (${String(preview.warnings.length)})`),
     pathList(React, preview.warnings, '没有被忽略或拒绝的行'),
   )
