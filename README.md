@@ -32,7 +32,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`. web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多起一个 Host 子进程并给 `<html>` 打上平台标记, 所以同一份包在两边通用, 不需要分别构建.
 
-引擎版本线要求 `@deepseek-ai/dsh-*` 不低于 `0.1.7-rc.2`, 且仍在 `0.1.x` 上 (peerDependencies 与 devDependencies 都写作 `>=0.1.7-rc.2 <0.2.0`). 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7` 起走 volatile Config (插件页的配置卡片经 configForms 读写); 本插件的覆写与配置面都按这条线走, 还在更早引擎线上的部署请继续用 v0.1.1.
+引擎版本线要求 `@deepseek-ai/dsh-*` 不低于 `0.2.0-rc.1`, 且仍在 `0.2.x` 上 (peerDependencies 与 devDependencies 都写作 `>=0.2.0-rc.1 <0.3.0`). 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7` 起走 volatile Config (插件页的配置卡片经 configForms 读写); 本插件的覆写与配置面都按这条线走, 还在更早引擎线上的部署请继续用 v0.1.1.
 
 ## 配置
 
