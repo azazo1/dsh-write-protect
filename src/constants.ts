@@ -16,6 +16,9 @@ export const WRITABLE_FIELD = 'writablePatterns'
 /** settings namespace 的 macOS broker 加固开关字段名. */
 export const HARDEN_BROKER_FIELD = 'hardenBroker'
 
+/** settings namespace 的 WSL 互操作加固开关字段名. */
+export const HARDEN_WSL_FIELD = 'hardenWsl'
+
 /** settings namespace 的工作区只读规则文件名 (单值, 空串即关闭识别). */
 export const READONLY_FILE_FIELD = 'readonlyFileName'
 
@@ -43,6 +46,15 @@ export const WATCH_TTL_MAX_FIELD = 'watchTtlMaxMs'
  * 漏洞, 因此默认收紧; 只在确实需要从沙箱内驱动宿主 GUI 时才在设置页关掉.
  */
 export const DEFAULT_HARDEN_BROKER = true
+
+/**
+ * WSL 互操作逃逸加固的默认值: 开启. 官方 bwrap 的 mount namespace 拦不住
+ * Linux 侧 exec 一个 Windows PE (典型是 `/mnt/c/Windows/System32/cmd.exe`),
+ * 那个 Windows 进程不继承沙箱挂载, 可经 UNC 写回真实磁盘. 与 macOS 上
+ * `open` 经 launchd 逃逸同类, 因此默认收紧; 只在确实需要从沙箱内读 Windows
+ * 盘或跑 Windows 程序时才在设置页关掉.
+ */
+export const DEFAULT_HARDEN_WSL = true
 
 /**
  * 保护路径的唯一默认来源: patch 配置 `readOnlyPaths` 的 schema 默认值与
@@ -202,8 +214,8 @@ export interface PathPreview {
 }
 
 /**
- * 为逐次调用的沙箱 policy 追加保护路径 (原文与缓存清单), 额外可写根与 broker
- * 加固开关. 官方 policy 类型不做改动, 这个接口合并让每个消费方都能直接读
+ * 为逐次调用的沙箱 policy 追加保护路径 (原文与缓存清单), 额外可写根, broker
+ * 加固开关与 WSL 互操作加固开关. 官方 policy 类型不做改动, 这个接口合并让每个消费方都能直接读
  * `policy.readOnlyPatterns` / `policy.readOnlyPaths` / `policy.writablePaths`,
  * 无需再引入插件私有的 service.
  */
@@ -240,5 +252,11 @@ declare module '@deepseek-ai/dsh-sandbox' {
      * 或部署配置显式关掉时才为 false, 此时命令按官方 profile 运行.
      */
     hardenBroker?: boolean
+    /**
+     * Linux bwrap 是否叠加 WSL 互操作逃逸加固 (tmpfs `/mnt` 与 `/run/WSL` 等).
+     * 缺省视为开启; 只有设置页或部署配置显式关掉时才为 false. 非 WSL 宿主上
+     * 即使为 true 也不改 argv.
+     */
+    hardenWsl?: boolean
   }
 }

@@ -2,16 +2,20 @@
  * 替换 base 的 `sandbox` 行 (Linux/macOS): 官方 `LocalSandboxProvider` 的
  * runner 链, 功能探测与执法报告全部原样保留, 只在 confine() 返回之后把
  * 额外可写根, 保护路径与本会话授权叠加为对 profile 的额外约束 —
- *   - bwrap: 在 `--` 分隔符之前先插入额外可写根的 `--bind <p> <p>`, 再插入
+ *   - bwrap: 在 `--` 分隔符之前先插入 WSL 互操作加固 (tmpfs `/mnt` 与
+ *     `/run/WSL` 等, 见 wsl.ts), 再插入额外可写根的 `--bind <p> <p>`, 再插入
  *     保护路径的 `--ro-bind <p> <p>`, 最后插入本会话授权的 `--bind`; 后挂载
- *     覆盖早挂载, 因此授权能把被保护的子树重新翻回可写;
+ *     覆盖早挂载, 因此授权能把被保护的子树重新翻回可写, 额外根若在 `/mnt`
+ *     下也能在 tmpfs 之后重新露出来;
  *   - Seatbelt (sandbox-exec): 先追加额外可写 allow, 再追加保护路径 deny, 最后
  *     追加授权 allow —— SBPL 按最后匹配生效, 授权 allow 必须排在 deny 之后才不
  *     会被它盖掉; 不区分模式地追加 broker 逃逸拒绝形式 (见 seatbelt.ts), 否则
  *     官方 profile 的 `(allow default)` 会让沙箱内一条 `open x.app` 把命令交给
  *     launchd 在沙箱外跑 —— 该加固由 policy 的 `hardenBroker` 控制, 设置页可关;
+ *     WSL 上 PE 互操作是同一类代理通道, 由 `hardenWsl` 控制, 设置页可关;
  *   - Landlock 是纯 allow-list 并集, 无法表达"父目录只读, 其中一棵子树可写":
- *     额外可写根可以加 `--rw`, 保护路径与本会话授权都告警一次.
+ *     额外可写根可以加 `--rw`, 保护路径与本会话授权都告警一次; WSL 互操作
+ *     也表达不了, 只告警一次.
  * Windows 不挂载本行 (保留官方 ACL provider), fs 围栏半区覆盖 write/edit 工具.
  *
  * 官方 Seam 的 `confine()` 自 0.1.6 起是异步的 (`Promise<ConfinedArgv>` 加一个
@@ -28,6 +32,7 @@ import { LocalSandboxProvider } from '@deepseek-ai/dsh-sandbox-local'
 import { canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SEATBELT_BROKER_DENIALS, appendSeatbeltForms, sbplString, seatbeltRegexDenials } from './seatbelt.ts'
+import { isWslHost, wslHardenArgs } from './wsl.ts'
 
 export const name = 'dsh-write-protect-provider'
 
@@ -43,15 +48,24 @@ function unique(paths: readonly string[]): string[] {
 }
 
 export class WriteProtectSandboxProvider extends LocalSandboxProvider {
+  declare internals: LocalSandboxProvider['internals'] & {
+    /** 测试注入: 覆盖 WSL 探测. 生产路径不设 internals.platform, 走 isWslHost(). */
+    probeWsl?: () => boolean
+  }
   private warnedUnsupported = false
   private warnedLandlockOverride = false
+  private warnedLandlockWsl = false
 
   /**
-   * 按官方结果包装 argv 后叠加额外可写根, 保护路径, 本会话授权与 broker 逃逸加固.
-   * Seatbelt 在两种模式下都要加固: `read-only` 的官方 profile 同样是
-   * `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍不打穿它.
+   * 按官方结果包装 argv 后叠加额外可写根, 保护路径, 本会话授权, broker 逃逸
+   * 加固与 WSL 互操作加固. Seatbelt 在两种模式下都要加固: `read-only` 的官方
+   * profile 同样是 `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍
+   * 不打穿它. WSL 加固同理: Windows 进程写的是真实磁盘, `read-only` 的
+   * `--ro-bind / /` 一样挡不住, 所以不区分模式.
    *
    * 叠加顺序是有意的 (两条链路都按"后匹配 / 后挂载生效"):
+   *   0. WSL 互操作加固 (tmpfs `/mnt` 等, 必须早于额外可写 bind, 这样
+   *      `/mnt` 下的额外根才能在 tmpfs 之后重新露出来);
    *   1. 额外可写根 (设置页声明的与经审批的工作区外路径);
    *   2. 保护路径 (ro-bind / deny);
    *   3. 本会话的保护旁路 (`writableOverrides`) —— 它要在保护路径之后才能把被
@@ -67,6 +81,10 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     const runner = result.argv[0]
     const separator = result.argv.indexOf('--')
     const profileArgs = separator === -1 ? result.argv.slice(1) : result.argv.slice(1, separator)
+    const isBwrap = runner === 'bwrap' || profileArgs.includes('--ro-bind')
+    const isLandlock = profileArgs.includes('--rw')
+    const hardenWsl = this.shouldHardenWsl(policy)
+
     if (runner === 'sandbox-exec') {
       if (policy.mode !== 'workspace-write') return this.hardenSeatbelt(result, policy)
       const overlay = await this.overlayPaths(policy)
@@ -77,19 +95,27 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
       })
     }
 
-    if (policy.mode !== 'workspace-write') return result
+    if (policy.mode !== 'workspace-write') {
+      if (hardenWsl && isBwrap) return this.withWslHarden(result, policy)
+      if (hardenWsl && isLandlock) this.warnLandlockWsl()
+      return result
+    }
     const { extra, protectedPaths } = await this.overlayPaths(policy)
     const overrides = policy.writableOverrides ?? []
-    if (extra.length === 0 && protectedPaths.length === 0 && overrides.length === 0) return result
+    if (extra.length === 0 && protectedPaths.length === 0 && overrides.length === 0 && !hardenWsl) {
+      return result
+    }
 
-    if (runner === 'bwrap' || profileArgs.includes('--ro-bind')) {
+    if (isBwrap) {
       let next = result
+      if (hardenWsl) next = this.withWslHarden(next, policy)
       if (extra.length > 0) next = this.withBwrapBinds(next, extra)
       if (protectedPaths.length > 0) next = this.withBwrapReadonly(next, protectedPaths)
       if (overrides.length > 0) next = this.withBwrapOverrideBinds(next, overrides)
       return next
     }
-    if (profileArgs.includes('--rw')) {
+    if (isLandlock) {
+      if (hardenWsl) this.warnLandlockWsl()
       let next = result
       if (extra.length > 0) next = this.withLandlockWritable(next, extra)
       if (protectedPaths.length > 0) this.warnUnsupported(runner)
@@ -150,6 +176,26 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     }
     if (policy.hardenBroker === false) return next
     return this.appendSeatbelt(next, SEATBELT_BROKER_DENIALS)
+  }
+
+  /**
+   * 当前这次 confine 要不要叠加 WSL 加固. `hardenWsl === false` 显式关掉;
+   * 未声明按开启. 测试注入 `internals.platform` 时必须再给 `probeWsl`, 否则
+   * 默认否, 避免 WSL 宿主上的 argv 单测被真实探测打乱.
+   */
+  private shouldHardenWsl(policy: SandboxPolicy): boolean {
+    if (policy.hardenWsl === false) return false
+    if (typeof this.internals.probeWsl === 'function') return this.internals.probeWsl()
+    if (this.internals.platform !== undefined) return false
+    return isWslHost()
+  }
+
+  /** 在 `--` 之前插入 WSL 互操作加固参数 (tmpfs `/mnt` 等). */
+  private withWslHarden(result: ConfinedArgv, policy: SandboxPolicy): ConfinedArgv {
+    return this.insertBeforeSeparator(result, wslHardenArgs({
+      workspaceRoot: policy.workspaceRoot,
+      mode: policy.mode,
+    }))
   }
 
   /** 在 `--` 之前插入一组 profile 参数. */
@@ -295,6 +341,16 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
     if (this.warnedLandlockOverride) return
     this.warnedLandlockOverride = true
     this.ctx.logger?.warn?.('dsh-write-protect: Landlock cannot express a writable subtree inside a protected directory, so session grants apply to the write/edit tools only on this runner (bwrap and macOS Seatbelt honor them for commands too)')
+  }
+
+  /**
+   * Landlock 不能藏挂载点, 也就挡不住 WSL 的 PE 互操作: 只告警一次, 命令按
+   * 官方 profile 跑.
+   */
+  private warnLandlockWsl(): void {
+    if (this.warnedLandlockWsl) return
+    this.warnedLandlockWsl = true
+    this.ctx.logger?.warn?.('dsh-write-protect: Landlock cannot hide WSL interop paths, so Windows PE execution is not blocked on this runner (bwrap honors hardenWsl)')
   }
 
   /** bwrap 无法挂载的缺失保护旁路: 告警, write/edit 侧仍然按授权放行. */

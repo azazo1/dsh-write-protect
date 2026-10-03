@@ -30,7 +30,7 @@
   disabled: !!js process.platform === 'linux' || process.platform === 'darwin'
 - insert:
     # 主入口: policy 半区 (package main, 同时是 client 半区的声明标记).
-    # `readOnlyPaths` / `writablePaths` / `hardenBroker` 与工作区规则文件相关
+    # `readOnlyPaths` / `writablePaths` / `hardenBroker` / `hardenWsl` 与工作区规则文件相关
     # 的 `readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` /
     # `allowWritableRequests` 都不在此声明:
     # 默认值由 schema 从 src/constants.ts 兜底 (保护 `.git`, 额外可写根为空,

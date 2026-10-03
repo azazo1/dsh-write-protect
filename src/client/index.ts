@@ -3,7 +3,7 @@
  * 注册一个 "写入权限" tab.
  *
  * 表单绑定 Host 的 policy 条目 (`dsh-write-protect-policy`), 它承载 patterns,
- * writablePatterns, hardenBroker, readonlyFileName, maxReadOnlyEntries, maxGrants,
+ * writablePatterns, hardenBroker, hardenWsl, readonlyFileName, maxReadOnlyEntries, maxGrants,
  * allowWritableRequests, watchProtectedPaths 与 watch 的两个间隔字段; 保存的值写进 profile
  * 的 patch 层并实时生效. `mode` 与 `workspaceRoot` 属于部署级字段, 仍只在 patch 层配置.
  *

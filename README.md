@@ -48,6 +48,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
     # readOnlyPaths: ['.git', '//etc/pki']
     # writablePaths: ['../shared-scratch', '//tmp/dsh-extra']
     # hardenBroker: false
+    # hardenWsl: false
     # readonlyFileName: '.readonly'   # 置空即关闭工作区规则文件识别
     # maxReadOnlyEntries: 200
     # maxGrants: 8
@@ -85,6 +86,13 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 - 关掉后命令按官方 profile 运行, 只影响 macOS, 只影响这一个加固; 保护路径与额外可写根照常.
 - 用户在插件页拨动开关后该值不再生效.
 
+`hardenWsl` 是 WSL 互操作逃逸加固的部署 base, 布尔值, 缺省 `true`:
+
+- 开启且宿主是 WSL 时, 在 bwrap profile 上叠加 tmpfs `/mnt` 与 `/run/WSL` 等 (见 "保护范围").
+- 关掉后命令按官方 profile 运行, 只影响 WSL, 只影响这一个加固; 保护路径与额外可写根照常.
+- 非 WSL 宿主上即使开启也不改 argv.
+- 用户在插件页拨动开关后该值不再生效.
+
 `readonlyFileName` / `maxReadOnlyEntries` / `maxGrants` / `allowWritableRequests` / `watchProtectedPaths` / `watchTtlMinMs` / `watchTtlMaxMs` 同理, 是只读规则文件, 可写申请与命令侧刷新的部署 base (见后两节), 用户保存过对应字段后该值不再生效.
 
 源码分三块, 边界是"有没有文件系统依赖":
@@ -95,13 +103,13 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 | `src/patterns.ts` | 把模式**枚举**成具体路径, 供保护路径清单与命令沙箱使用 | `node:fs`、`canonicalPath` |
 | `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱策略、进程沙箱 argv 叠加 | DSH 引擎 |
 
-`src/readonly-file.ts` 负责工作区只读规则文件的读取与缓存, `src/path-expand.ts` 负责额外可写根的字面路径展开, `src/request-writable-path.ts` 是可写申请的授权表与 `request_writable_path` 工具, `src/grants-route.ts` 与 `src/grant-notice.ts` 分别是会话面板的 `/api` 路由与撤回通知.
+`src/readonly-file.ts` 负责工作区只读规则文件的读取与缓存, `src/path-expand.ts` 负责额外可写根的字面路径展开, `src/request-writable-path.ts` 是可写申请的授权表与 `request_writable_path` 工具, `src/grants-route.ts` 与 `src/grant-notice.ts` 分别是会话面板的 `/api` 路由与撤回通知, `src/seatbelt.ts` 与 `src/wsl.ts` 分别是 macOS broker 加固与 WSL 互操作加固.
 
 ## 插件页配置
 
 <img src="https://raw.githubusercontent.com/azazo1/dsh-write-protect/HEAD/docs/screenshots/settings-page.png" alt="写入保护插件页配置" width="520">
 
-插件页里 dsh-write-protect 卡片上的配置表单, 从上到下是: 保护路径与额外可写根两个多行文本, 工作区只读规则文件名与最多条目数, 单会话可写授权上限, macOS broker 逃逸加固, 模型申请可写路径, 监听工作区变化, 以及刷新下界与上界两个毫秒值. 草稿只留在卡片里, 点 "保存" 才写进 profile 的 patch 层并实时生效; 预览面板按当前草稿展开, 不必先保存:
+插件页里 dsh-write-protect 卡片上的配置表单, 从上到下是: 保护路径与额外可写根两个多行文本, 工作区只读规则文件名与最多条目数, 单会话可写授权上限, macOS broker 逃逸加固, WSL 互操作加固, 模型申请可写路径, 监听工作区变化, 以及刷新下界与上界两个毫秒值. 草稿只留在卡片里, 点 "保存" 才写进 profile 的 patch 层并实时生效; 预览面板按当前草稿展开, 不必先保存:
 
 ```text
 # 保护路径
@@ -176,6 +184,7 @@ secrets/
 | 本会话授权 (`request_writable_path`) | 全平台 | 工作区外路径按额外根生效; 保护旁路对 write / edit 与命令沙箱 (bwrap / Seatbelt) 都生效 |
 | 会话写入权限面板 | 全平台 | 列出并撤回本会话授权, 手动加临时可写根; 撤回后向会话投一条通知消息 |
 | macOS broker 加固 | macOS | 堵住 `open` 经 launchd 把命令挪到沙箱外执行 |
+| WSL 互操作加固 | WSL + bwrap | 堵住 Linux 侧 exec Windows PE 把命令挪到沙箱外执行 |
 
 两类入口的判定方式不同, 这是有意的: write / edit 拿得到目标路径, 因此直接按 gitignore 模式判定 —— 深层嵌套, 尚未存在的匹配一样挡得住, 每条写入只做几次正则; bash 的沙箱 (mount / profile) 只能吃具体路径, 所以那一侧才需要枚举展开. 枚举走 `fs.promises`, 每次 readdir / lstat 让出事件循环; 同步的 `resolve()` 只注入模式原文和缓存里已有的路径, 不在会话加载时扫盘. 提示词同样只陈述模式, 不枚举绝对路径.
 
@@ -192,7 +201,7 @@ macOS 上命令侧还有第二条通道: Seatbelt profile 支持按正则匹配�
 
 这一步只影响命令侧. write / edit 围栏始终按模式原文判定, 与展开、监听、缓存都无关.
 
-主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式.
+主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式. WSL 互操作同样不区分模式: Windows 进程写的是真实磁盘, `read-only` 的 `--ro-bind / /` 一样挡不住.
 
 ### macOS broker 逃逸加固
 
@@ -210,13 +219,32 @@ SBPL 按 last-match-wins 解释, 追加在末尾才能盖过 `(allow default)`. 
 
 插件页的 "macOS broker 逃逸加固" 开关与 patch 的 `hardenBroker` 控制这一个加固是否生效, 缺省开启. 关掉后 provider 原样返回官方 argv, 适合确实需要从沙箱内驱动宿主 GUI 的场景; 关掉即恢复可以被 `open` 打穿的状态. 保护路径与额外可写根的叠加不受这个开关影响.
 
+### WSL 互操作逃逸加固
+
+官方 Linux bwrap 是 `--ro-bind / /` 加工作区 `--bind`, 没有 seccomp, 也不拦 `execve`. WSL2 会把 Linux 侧启动的 Windows PE (典型路径在 `/mnt/c`) 交给 Windows 宿主创建进程; 那个进程不继承 bwrap 的挂载, 可经 UNC 写回真实磁盘, 于是保护路径的 `--ro-bind` 与 write / edit 围栏都被绕开 —— `read-only` 同样会被打穿. 本插件在探测到 WSL 时, 在官方 profile 之后叠加:
+
+```text
+--tmpfs /mnt
+--tmpfs /run/WSL
+--tmpfs /proc/sys/fs/binfmt_misc
+--bind /dev/null /init
+```
+
+后挂载覆盖早挂载. `/mnt` 藏掉 Windows 盘与 WSLg; `/run/WSL` 藏掉 interop 套接字, 工作区里即便有 PE 也连不上 Windows; `/init` 是 WSL 的互操作翻译器. 宿主上没有的路径会跳过 (bwrap 的 `--tmpfs` 要求挂载点已存在), 避免整条命令被拒. 工作区本身若在 `/mnt` 下 (Windows 盘上的项目), tmpfs 之后会把工作区重新 bind 回去; 额外可写根若在 `/mnt` 下, 同样在 tmpfs 之后重新露出来.
+
+加固只做收紧, 不放宽任何位置; 常规 Linux 命令 (node, git, pnpm, python, curl, tar, rsync 等) 不受影响, 只是沙箱内看不到 `/mnt/c` 这一类 Windows 盘. 挂在 `/mnt/wsl` 下的东西 (Docker Desktop 的跨发行版挂载一类) 同样会看不见, 需要在沙箱内用它们时关掉这个开关.
+
+插件页的 "WSL 互操作加固" 开关与 patch 的 `hardenWsl` 控制这一个加固是否生效, 缺省开启. 关掉后 provider 不叠加上述参数, 适合确实需要从沙箱内读 Windows 盘或跑 Windows 程序的场景; 关掉即恢复可被互操作打穿的状态. 保护路径与额外可写根的叠加不受这个开关影响. 非 WSL 宿主上即使开启也不改 argv.
+
 patch 配置和插件页文本走同一套解析.
 
 ### 边界与已知限制
 
 - **Windows 上 bash 挡不住, 也放不宽**: write / edit 能挡保护路径、能放行额外根; bash / pwsh 两者都不行. Windows 沙箱只能把整个工作区设成可写或不可写.
-- **broker 加固只在 macOS 生效**: 官方 macOS profile 的 `(allow default)` 让 `open` 能把命令交给 launchd 在沙箱外跑, 本插件追加的拒绝形式堵住这条路. Linux 的 bwrap 用 mount namespace, 没有 launchd 那类代理通道, 但它的网络命名空间未隔离, 沙箱内仍可连宿主守护进程 (Docker socket, ssh-agent 一类) 让外面代劳, 这类问题本插件不处理.
-- **Linux 没有 bwrap, 落到 Landlock 时**: 没法单独保护子路径, 命令按官方沙箱跑并告警一次; 额外可写根可以加 `--rw`. write / edit 两者都生效.
+- **broker 加固只在 macOS 生效; WSL 互操作加固只在 WSL + bwrap 生效**: 官方 macOS profile 的 `(allow default)` 让 `open` 能把命令交给 launchd 在沙箱外跑, 本插件追加的拒绝形式堵住这条路. WSL 上对应的代理通道是 PE 互操作, 由 `hardenWsl` 堵住. 两边都只收紧不放宽. Linux 的网络命名空间仍未隔离, 沙箱内仍可连宿主守护进程 (Docker socket, ssh-agent 一类) 让外面代劳, 这类问题本插件不处理.
+- **工作区或额外可写根是整块 Windows 盘时**: tmpfs `/mnt` 之后会把那条路径重新 bind 回去, PE 文件重新可见, 但仍没有 `/run/WSL` 套接字. 真正要在沙箱内用 Windows 程序, 请关掉 `hardenWsl`.
+- **`hardenWsl` 会连带藏掉 `/mnt/wsl`**: WSLg 与 Docker Desktop 的跨发行版挂载都在那里, 沙箱内会看不见.
+- **Linux 没有 bwrap, 落到 Landlock 时**: 没法单独保护子路径, 也没法藏 WSL 互操作入口, 命令按官方沙箱跑并告警一次; 额外可写根可以加 `--rw`. write / edit 两者都生效.
 - **完全放开沙箱时** (`danger-full-access`): 本插件整体不介入 —— bash 不进沙箱, write / edit 的保护路径与规则文件判定也跳过. 该模式是用户显式选择的"不设限", 保护只在 `read-only` 与 `workspace-write` 下生效.
 - **Linux bwrap 要求路径真实存在**: 通配扫出来的保护路径如果当时还不在磁盘上, 会跳过这条只读挂载并告警. 需要无条件保护的工作区根路径请用字面条目 (如 `/.git`); 字面条目即使还不存在, write / edit 也会拒绝.
 - **命令侧的枚举窗口 (macOS 字面条目除外)**: Linux bwrap / Landlock 与 macOS 上的通配条目只能按枚举出来的路径保护. 有 watcher 时, 变化之后的下一条命令就会吃到新清单; watcher 不可用时退回时间兜底 (最多 `watchTtlMaxMs`, 默认 30 秒). macOS 上的**字面条目**没有这个窗口 (按正则拒绝, 见上节), 因此 `git init` 也建不出 `.git`. 已经要保护的目录不会再往里扫, 里面的匹配项不再单独列出; 被 `!` 放行的目录还会继续找. 目录符号链接不跟随, 避免扫到工作区外. write / edit 不受这条限制: 它直接按模式判定.
@@ -235,7 +263,7 @@ patch 配置和插件页文本走同一套解析.
 just install    # 安装依赖
 just typecheck  # TypeScript 类型检查
 just build      # 构建 lib/
-just test       # 测试套件 (Seatbelt e2e 仅在 macOS 上运行)
+just test       # 测试套件 (Seatbelt e2e 仅 macOS; bwrap e2e 仅 Linux; WSL 加固 e2e 仅 WSL)
 just verify     # 以上全流程 + 打包预览
 ```
 
@@ -247,9 +275,9 @@ just verify     # 以上全流程 + 打包预览
 | `src/patterns.ts` | 把模式**异步枚举**成具体路径, 供命令沙箱与预览面板使用 (另有额外可写根的字面路径解析) | `node:fs/promises`、`canonicalPath` |
 | `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱 policy (含规则文件与授权)、进程沙箱 argv 叠加 | DSH 引擎 |
 
-`src/readonly-file.ts` 读取并校验工作区只读规则文件, `src/request-writable-path.ts` 是 `request_writable_path` 工具与会话授权表 (含撤回), `src/path-expand.ts` 负责额外可写根的字面路径展开 (`~` / 环境变量 / 平台差异), `src/grants-route.ts` 是会话写入权限面板的 `/api` 路由, `src/grant-notice.ts` 负责撤回之后投给会话的那条通知.
+`src/readonly-file.ts` 读取并校验工作区只读规则文件, `src/request-writable-path.ts` 是 `request_writable_path` 工具与会话授权表 (含撤回), `src/path-expand.ts` 负责额外可写根的字面路径展开 (`~` / 环境变量 / 平台差异), `src/grants-route.ts` 是会话写入权限面板的 `/api` 路由, `src/grant-notice.ts` 负责撤回之后投给会话的那条通知, `src/seatbelt.ts` 与 `src/wsl.ts` 分别是 macOS broker 加固与 WSL 互操作加固的参数生成.
 
-测试覆盖: 纯匹配器语义 (锚定, `**`, 字符类, 取反, 前缀围栏, 目录标记, 大小写, 工作区外不match; 不需要任何临时目录), 路径解析语义 (相对锚定, 解开符号链接, 去重, 通配枚举与取反, 额外可写字面路径), 只读规则文件的解析与校验 (符号链接拒绝, 绝对与越界条目, 条目上限, 缓存与重读), 可写申请的判定矩阵 (直通, 规则文件硬保护, 工作区内旁路, 超限, 四种未获同意的结果) 与授权落到 policy 的通道, 会话面板路由的三个动作 (清单, 手动添加的内外分类与拒绝, 撤回与通知投递), 撤回通知消息的来源标记, 面板数据面的请求体与失败解读, write / edit 按模式判定 (启动后才出现的深层路径、尾部 `/` 与同名文件、工作区边界), bwrap / Seatbelt / Landlock 的命令行叠加, write / edit 工具的拒绝与额外根放行矩阵, 配置通道的 base 与用户覆盖分层, client bundle 的 loader 注册, macOS 上真实 `sandbox-exec` 的内核级端到端 (包括 `open` broker 逃逸的对照组与加固后的拦截验证), 以及 Linux 上真实 `bwrap` 的内核级端到端 (保护路径写入 EROFS, 读取照常, 额外可写根可写; 本机 bwrap 不可用时整组跳过).
+测试覆盖: 纯匹配器语义 (锚定, `**`, 字符类, 取反, 前缀围栏, 目录标记, 大小写, 工作区外不match; 不需要任何临时目录), 路径解析语义 (相对锚定, 解开符号链接, 去重, 通配枚举与取反, 额外可写字面路径), 只读规则文件的解析与校验 (符号链接拒绝, 绝对与越界条目, 条目上限, 缓存与重读), 可写申请的判定矩阵 (直通, 规则文件硬保护, 工作区内旁路, 超限, 四种未获同意的结果) 与授权落到 policy 的通道, 会话面板路由的三个动作 (清单, 手动添加的内外分类与拒绝, 撤回与通知投递), 撤回通知消息的来源标记, 面板数据面的请求体与失败解读, write / edit 按模式判定 (启动后才出现的深层路径、尾部 `/` 与同名文件、工作区边界), bwrap / Seatbelt / Landlock 的命令行叠加 (含 WSL 加固的插入位置), write / edit 工具的拒绝与额外根放行矩阵, 配置通道的 base 与用户覆盖分层, client bundle 的 loader 注册, macOS 上真实 `sandbox-exec` 的内核级端到端 (包括 `open` broker 逃逸的对照组与加固后的拦截验证), 以及 Linux 上真实 `bwrap` 的内核级端到端 (保护路径写入 EROFS, 读取照常, 额外可写根可写; WSL 上再断言 Windows 盘与 interop 套接字被藏掉, 关掉开关后盘仍可见; 本机 bwrap 不可用时整组跳过).
 
 ## License
 

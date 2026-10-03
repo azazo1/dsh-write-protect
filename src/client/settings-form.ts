@@ -11,9 +11,9 @@ import {
   type SettingsFormScope, type SettingsFormShell,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
-  PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD,
-  WRITABLE_FIELD,
+  ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, HARDEN_WSL_FIELD, MAX_GRANTS_FIELD,
+  MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD,
+  WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../constants.ts'
 
 /** 卡片读到的配置形状. */
@@ -23,6 +23,7 @@ export interface WriteProtectSettings {
   patterns?: string
   writablePatterns?: string
   hardenBroker?: boolean
+  hardenWsl?: boolean
   readonlyFileName?: string
   maxReadOnlyEntries?: number
   maxGrants?: number
@@ -57,6 +58,7 @@ export interface WriteProtectCardState extends SettingsFormShell {
   maxReadOnlyEntries: SettingsFieldState
   maxGrants: SettingsFieldState
   hardenBroker: SettingsFieldState
+  hardenWsl: SettingsFieldState
   allowWritableRequests: SettingsFieldState
   watchProtectedPaths: SettingsFieldState
   watchTtlMinMs: SettingsFieldState
@@ -95,6 +97,7 @@ export class WriteProtectSettingsForm {
       settingsNumberField(MAX_READONLY_ENTRIES_FIELD),
       settingsNumberField(MAX_GRANTS_FIELD),
       settingsBooleanField(HARDEN_BROKER_FIELD),
+      settingsBooleanField(HARDEN_WSL_FIELD),
       settingsBooleanField(ALLOW_REQUESTS_FIELD),
       settingsBooleanField(WATCH_FIELD),
       settingsNumberField(WATCH_TTL_MIN_FIELD),
@@ -145,6 +148,7 @@ export class WriteProtectSettingsForm {
       maxReadOnlyEntries: this.form.field(MAX_READONLY_ENTRIES_FIELD),
       maxGrants: this.form.field(MAX_GRANTS_FIELD),
       hardenBroker: this.form.field(HARDEN_BROKER_FIELD),
+      hardenWsl: this.form.field(HARDEN_WSL_FIELD),
       allowWritableRequests: this.form.field(ALLOW_REQUESTS_FIELD),
       watchProtectedPaths: this.form.field(WATCH_FIELD),
       watchTtlMinMs: this.form.field(WATCH_TTL_MIN_FIELD),

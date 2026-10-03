@@ -3,14 +3,23 @@ import { LocalSandboxProvider } from "@deepseek-ai/dsh-sandbox-local";
 //#region src/provider.d.ts
 export declare const name = "dsh-write-protect-provider";
 export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
+  internals: LocalSandboxProvider['internals'] & {
+    /** 测试注入: 覆盖 WSL 探测. 生产路径不设 internals.platform, 走 isWslHost(). */
+    probeWsl?: () => boolean;
+  };
   private warnedUnsupported;
   private warnedLandlockOverride;
+  private warnedLandlockWsl;
   /**
-   * 按官方结果包装 argv 后叠加额外可写根, 保护路径, 本会话授权与 broker 逃逸加固.
-   * Seatbelt 在两种模式下都要加固: `read-only` 的官方 profile 同样是
-   * `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍不打穿它.
+   * 按官方结果包装 argv 后叠加额外可写根, 保护路径, 本会话授权, broker 逃逸
+   * 加固与 WSL 互操作加固. Seatbelt 在两种模式下都要加固: `read-only` 的官方
+   * profile 同样是 `(allow default)`, 同样能被 `open` 打穿, 只是额外可写根仍
+   * 不打穿它. WSL 加固同理: Windows 进程写的是真实磁盘, `read-only` 的
+   * `--ro-bind / /` 一样挡不住, 所以不区分模式.
    *
    * 叠加顺序是有意的 (两条链路都按"后匹配 / 后挂载生效"):
+   *   0. WSL 互操作加固 (tmpfs `/mnt` 等, 必须早于额外可写 bind, 这样
+   *      `/mnt` 下的额外根才能在 tmpfs 之后重新露出来);
    *   1. 额外可写根 (设置页声明的与经审批的工作区外路径);
    *   2. 保护路径 (ro-bind / deny);
    *   3. 本会话的保护旁路 (`writableOverrides`) —— 它要在保护路径之后才能把被
@@ -37,6 +46,14 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * `hardenBroker` 被显式关掉时只跳过 broker 拒绝形式, 命令按官方 profile 运行.
    */
   private hardenSeatbelt;
+  /**
+   * 当前这次 confine 要不要叠加 WSL 加固. `hardenWsl === false` 显式关掉;
+   * 未声明按开启. 测试注入 `internals.platform` 时必须再给 `probeWsl`, 否则
+   * 默认否, 避免 WSL 宿主上的 argv 单测被真实探测打乱.
+   */
+  private shouldHardenWsl;
+  /** 在 `--` 之前插入 WSL 互操作加固参数 (tmpfs `/mnt` 等). */
+  private withWslHarden;
   /** 在 `--` 之前插入一组 profile 参数. */
   private insertBeforeSeparator;
   /**
@@ -85,6 +102,11 @@ export declare class WriteProtectSandboxProvider extends LocalSandboxProvider {
    * 命令侧不叠加它, 只告警一次.
    */
   private warnLandlockOverride;
+  /**
+   * Landlock 不能藏挂载点, 也就挡不住 WSL 的 PE 互操作: 只告警一次, 命令按
+   * 官方 profile 跑.
+   */
+  private warnLandlockWsl;
   /** bwrap 无法挂载的缺失保护旁路: 告警, write/edit 侧仍然按授权放行. */
   private warnMissingOverride;
 }

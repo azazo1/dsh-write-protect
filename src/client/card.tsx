@@ -8,9 +8,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { SettingsForm, SettingsValueField } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
-  PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD,
-  WRITABLE_FIELD,
+  ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, HARDEN_WSL_FIELD, MAX_GRANTS_FIELD,
+  MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD,
+  WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../constants.ts'
 import { SwitchField, TextAreaField } from './fields.tsx'
 import { WriteProtectPreview } from './preview.tsx'
@@ -147,6 +147,13 @@ export function WriteProtectSettingsCard(props: WriteProtectSettingsCardProps) {
         '在 Seatbelt profile 末尾追加拒绝 open, 只收紧不放宽; 仅 macOS 生效.',
         HARDEN_BROKER_FIELD,
         state.hardenBroker,
+      )}
+      {switchField(
+        'plugin-config-write-protect-harden-wsl',
+        'WSL 互操作加固',
+        '在 bwrap 里藏掉 /mnt 与 /run/WSL, 挡住沙箱内启动 Windows 程序这条逃逸通道; 只收紧不放宽, 仅 WSL 生效. 需要从沙箱内读 Windows 盘或跑 Windows 程序时关掉.',
+        HARDEN_WSL_FIELD,
+        state.hardenWsl,
       )}
       {switchField(
         'plugin-config-write-protect-requests',

@@ -36,6 +36,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import {
   DEFAULT_ALLOW_REQUESTS,
   DEFAULT_HARDEN_BROKER,
+  DEFAULT_HARDEN_WSL,
   DEFAULT_MAX_GRANTS,
   DEFAULT_MAX_READONLY_ENTRIES,
   DEFAULT_READONLY_FILE_NAME,
@@ -48,6 +49,7 @@ import {
   REQUEST_WRITABLE_PATH_TOOL,
   isValidReadonlyFileName,
 } from './constants.ts'
+import { isWslHost } from './wsl.ts'
 import { compileGitignore } from './gitignore.ts'
 import type { FetchRouteConnection } from './connection.ts'
 import { agentsPortOf, notifyGrantRevoked, type WriteProtectAgents } from './grant-notice.ts'
@@ -89,6 +91,11 @@ export interface Config {
    * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
    */
   hardenBroker?: boolean | Volatile<boolean>
+  /**
+   * WSL 互操作逃逸加固的部署 base, 缺省开启 (见 `DEFAULT_HARDEN_WSL`).
+   * 用户在设置页拨动开关后该值不再生效. 非 WSL 宿主上即使开启也不改 argv.
+   */
+  hardenWsl?: boolean | Volatile<boolean>
   /**
    * 工作区只读规则文件名部署 base, 缺省 `.readonly` (见
    * `DEFAULT_READONLY_FILE_NAME`): 工作区根下的这份文件按 gitignore 语义解析,
@@ -186,6 +193,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     patterns: z.string().volatile(),
     writablePatterns: z.string().volatile(),
     hardenBroker: z.boolean().default(DEFAULT_HARDEN_BROKER).volatile(),
+    hardenWsl: z.boolean().default(DEFAULT_HARDEN_WSL).volatile(),
     readonlyFileName: z.string().default(DEFAULT_READONLY_FILE_NAME).volatile(),
     maxReadOnlyEntries: z.number().default(DEFAULT_MAX_READONLY_ENTRIES).volatile(),
     maxGrants: z.number().default(DEFAULT_MAX_GRANTS).volatile(),
@@ -290,6 +298,9 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           } else {
             parts.push('Extra write access is not granted by this deployment: do not ask for it.')
           }
+          if (this.currentHardenWsl() && isWslHost()) {
+            parts.push('WSL interop hardening is active for sandboxed commands: the Windows drives under /mnt and the /run/WSL interop sockets are hidden, so Windows executables (cmd.exe and the like) cannot be launched from inside the sandbox. This is the Linux analog of the macOS broker hardening. Turn off WSL interop hardening in plugin settings if a task must use Windows interop from inside the sandbox.')
+          }
           return parts.join(' ')
         },
       })
@@ -363,6 +374,11 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker(): boolean {
     return currentConfigValue(this.config.hardenBroker, DEFAULT_HARDEN_BROKER)
+  }
+
+  /** 当前生效的 WSL 互操作加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
+  private currentHardenWsl(): boolean {
+    return currentConfigValue(this.config.hardenWsl, DEFAULT_HARDEN_WSL)
   }
 
   /** 当前生效的规则文件名 (空串即关闭识别). */
@@ -624,7 +640,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
    * 追加注入合并后的保护路径原文 (给 write / edit 围栏逐路径判定), 展开缓存里
    * 已有的清单 (冷缓存时为空, `confine()` 会 await {@link materialize}), 额外
-   * 可写根, 本会话授权, 保护旁路, 规则文件路径与 broker 加固开关.
+   * 可写根, 本会话授权, 保护旁路, 规则文件路径, broker 加固开关与 WSL 互操作加固开关.
    * @param request - 可选的会话与已批准的模式覆盖.
    * @returns 带有 `readOnlyPatterns` / `readOnlyPaths` / `writablePaths` /
    * `writableOverrides` / `rulesFilePath` 的完整逐次调用 policy.
@@ -642,6 +658,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     policy.writableOverrides = snapshot.overrides
     policy.rulesFilePath = root === undefined ? undefined : this.rulesFilePath(root)
     policy.hardenBroker = this.currentHardenBroker()
+    policy.hardenWsl = this.currentHardenWsl()
     if (sessionId !== undefined && root !== undefined) this.rememberSession(sessionId, root)
     return policy
   }
@@ -673,6 +690,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       writableOverrides: snapshot.overrides,
       rulesFilePath: workspaceRoot === undefined ? undefined : this.rulesFilePath(workspaceRoot),
       hardenBroker: this.currentHardenBroker(),
+      hardenWsl: this.currentHardenWsl(),
     }
   }
 }

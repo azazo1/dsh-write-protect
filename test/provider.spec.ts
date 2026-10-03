@@ -10,7 +10,20 @@ import { Context } from '@deepseek-ai/cordis'
 import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { WriteProtectSandboxProvider } from '../src/provider.ts'
 import { SEATBELT_BROKER_DENIALS } from '../src/seatbelt.ts'
+import { wslHardenArgs } from '../src/wsl.ts'
 import { projectTmpDir } from './fixture-root.ts'
+
+/** argv 里一段连续参数的起始下标; 找不到为 -1. */
+function indexOfSeq(argv: readonly string[], seq: readonly string[]): number {
+  if (seq.length === 0) return -1
+  outer: for (let i = 0; i <= argv.length - seq.length; i++) {
+    for (let j = 0; j < seq.length; j++) {
+      if (argv[i + j] !== seq[j]) continue outer
+    }
+    return i
+  }
+  return -1
+}
 
 type Internals = WriteProtectSandboxProvider['internals']
 
@@ -35,6 +48,7 @@ function ww(
 }
 
 const BWRAP_INTERNALS: Internals = { platform: 'linux', probeBwrap: () => true }
+const WSL_INTERNALS: Internals = { platform: 'linux', probeBwrap: () => true, probeWsl: () => true }
 const SEATBELT_INTERNALS: Internals = { platform: 'darwin' }
 const LANDLOCK_INTERNALS: Internals = {
   platform: 'linux',
@@ -315,5 +329,55 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const sandbox = await setup({}, BWRAP_INTERNALS)
     const result = await sandbox.confine(['true'], { ...ww(realWs, []), readOnlyPatterns: '.git' })
     expect(result.argv.join(' ')).not.toContain('(regex')
+  })
+
+  it('bwrap: probeWsl 为 true 时 WSL 加固排在额外 bind 与保护 ro-bind 之前', async () => {
+    const sandbox = await setup({}, WSL_INTERNALS)
+    const gitdir = join(realWs, 'gitdir')
+    const result = await sandbox.confine(['true'], ww(realWs, [gitdir], [realExtra]))
+    const harden = wslHardenArgs({ workspaceRoot: realWs, mode: 'workspace-write' })
+    const extraAt = indexOfSeq(result.argv, ['--bind', realExtra, realExtra])
+    const roAt = indexOfSeq(result.argv, ['--ro-bind', gitdir, gitdir])
+    expect(extraAt).toBeGreaterThan(-1)
+    expect(roAt).toBeGreaterThan(extraAt)
+    if (harden.length > 0) {
+      const hardenAt = indexOfSeq(result.argv, harden)
+      expect(hardenAt).toBeGreaterThan(-1)
+      expect(extraAt).toBeGreaterThan(hardenAt)
+    }
+  })
+
+  it('bwrap: hardenWsl 为 false 时不叠加, 保护路径仍生效', async () => {
+    const sandbox = await setup({}, WSL_INTERNALS)
+    const gitdir = join(realWs, 'gitdir')
+    const result = await sandbox.confine(['true'], { ...ww(realWs, [gitdir]), hardenWsl: false })
+    expect(indexOfSeq(result.argv, ['--tmpfs', '/mnt'])).toBe(-1)
+    expect(indexOfSeq(result.argv, ['--tmpfs', '/run/WSL'])).toBe(-1)
+    expect(indexOfSeq(result.argv, ['--ro-bind', gitdir, gitdir])).toBeGreaterThan(-1)
+  })
+
+  it('bwrap: 未注入 probeWsl 时即使宿主是 WSL 也不叠加 (argv 单测不被真实探测打乱)', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const result = await sandbox.confine(['true'], ww(realWs, []))
+    expect(indexOfSeq(result.argv, ['--tmpfs', '/mnt'])).toBe(-1)
+    expect(indexOfSeq(result.argv, ['--tmpfs', '/run/WSL'])).toBe(-1)
+  })
+
+  it('bwrap: read-only 同样叠加 WSL 加固', async () => {
+    const sandbox = await setup({}, WSL_INTERNALS)
+    const result = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: realWs })
+    const harden = wslHardenArgs({ workspaceRoot: realWs, mode: 'read-only' })
+    if (harden.length === 0) {
+      expect(indexOfSeq(result.argv, ['--tmpfs', '/mnt'])).toBe(-1)
+      return
+    }
+    expect(indexOfSeq(result.argv, harden)).toBeGreaterThan(-1)
+  })
+
+  it('Landlock: WSL 加固不改 argv', async () => {
+    const sandbox = await setup({}, { ...LANDLOCK_INTERNALS, probeWsl: () => true })
+    const baseline = await sandbox.confine(['true'], { ...ww(realWs, []), hardenWsl: false })
+    const result = await sandbox.confine(['true'], ww(realWs, []))
+    expect(result.argv).toEqual(baseline.argv)
   })
 })

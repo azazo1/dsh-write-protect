@@ -95,8 +95,8 @@ interface ExpansionSnapshot {
 /** 一次可写授权的性质. */
 type GrantKind = 'extra-root' | 'override';
 /**
- * 为逐次调用的沙箱 policy 追加保护路径 (原文与缓存清单), 额外可写根与 broker
- * 加固开关. 官方 policy 类型不做改动, 这个接口合并让每个消费方都能直接读
+ * 为逐次调用的沙箱 policy 追加保护路径 (原文与缓存清单), 额外可写根, broker
+ * 加固开关与 WSL 互操作加固开关. 官方 policy 类型不做改动, 这个接口合并让每个消费方都能直接读
  * `policy.readOnlyPatterns` / `policy.readOnlyPaths` / `policy.writablePaths`,
  * 无需再引入插件私有的 service.
  */
@@ -133,6 +133,12 @@ declare module '@deepseek-ai/dsh-sandbox' {
      * 或部署配置显式关掉时才为 false, 此时命令按官方 profile 运行.
      */
     hardenBroker?: boolean;
+    /**
+     * Linux bwrap 是否叠加 WSL 互操作逃逸加固 (tmpfs `/mnt` 与 `/run/WSL` 等).
+     * 缺省视为开启; 只有设置页或部署配置显式关掉时才为 false. 非 WSL 宿主上
+     * 即使为 true 也不改 argv.
+     */
+    hardenWsl?: boolean;
   }
 }
 //#endregion
@@ -233,6 +239,11 @@ export interface Config {
    */
   hardenBroker?: boolean | Volatile<boolean>;
   /**
+   * WSL 互操作逃逸加固的部署 base, 缺省开启 (见 `DEFAULT_HARDEN_WSL`).
+   * 用户在设置页拨动开关后该值不再生效. 非 WSL 宿主上即使开启也不改 argv.
+   */
+  hardenWsl?: boolean | Volatile<boolean>;
+  /**
    * 工作区只读规则文件名部署 base, 缺省 `.readonly` (见
    * `DEFAULT_READONLY_FILE_NAME`): 工作区根下的这份文件按 gitignore 语义解析,
    * 逐行追加在设置页文本之后; 空串表示关闭该识别. 用户保存过
@@ -303,6 +314,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     patterns: z<string, string, "volatile">;
     writablePatterns: z<string, string, "volatile">;
     hardenBroker: z<boolean, boolean, "volatile-defined">;
+    hardenWsl: z<boolean, boolean, "volatile-defined">;
     readonlyFileName: z<string, string, "volatile-defined">;
     maxReadOnlyEntries: z<number, number, "volatile-defined">;
     maxGrants: z<number, number, "volatile-defined">;
@@ -318,6 +330,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     patterns: z<string, string, "volatile">;
     writablePatterns: z<string, string, "volatile">;
     hardenBroker: z<boolean, boolean, "volatile-defined">;
+    hardenWsl: z<boolean, boolean, "volatile-defined">;
     readonlyFileName: z<string, string, "volatile-defined">;
     maxReadOnlyEntries: z<number, number, "volatile-defined">;
     maxGrants: z<number, number, "volatile-defined">;
@@ -354,6 +367,8 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private currentWritableText;
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker;
+  /** 当前生效的 WSL 互操作加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
+  private currentHardenWsl;
   /** 当前生效的规则文件名 (空串即关闭识别). */
   currentReadonlyFileName(): string;
   /**
@@ -464,7 +479,7 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
    * 解析一次调用的完整 policy: 官方的 mode/root/session 逻辑原样保留, 在结果上
    * 追加注入合并后的保护路径原文 (给 write / edit 围栏逐路径判定), 展开缓存里
    * 已有的清单 (冷缓存时为空, `confine()` 会 await {@link materialize}), 额外
-   * 可写根, 本会话授权, 保护旁路, 规则文件路径与 broker 加固开关.
+   * 可写根, 本会话授权, 保护旁路, 规则文件路径, broker 加固开关与 WSL 互操作加固开关.
    * @param request - 可选的会话与已批准的模式覆盖.
    * @returns 带有 `readOnlyPatterns` / `readOnlyPaths` / `writablePaths` /
    * `writableOverrides` / `rulesFilePath` 的完整逐次调用 policy.

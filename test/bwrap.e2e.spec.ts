@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { WriteProtectSandboxProvider } from '../src/provider.ts'
 import { projectTmpDir } from './fixture-root.ts'
 
@@ -53,7 +54,10 @@ describe.skipIf(!usable)('bwrap 真实执法 (linux)', () => {
   })
 
   /** 真跑一次被沙箱包装的命令: 走真实平台链 (不注入 internals), 返回执行事实. */
-  async function runConfined(script: string): Promise<{ runner: string, enforcement: string, status: number | null, stderr: string }> {
+  async function runConfined(
+    script: string,
+    extraPolicy: Partial<SandboxPolicy> = {},
+  ): Promise<{ runner: string, enforcement: string, status: number | null, stdout: string, stderr: string }> {
     const ctx = new Context()
     await ctx.plugin(WriteProtectSandboxProvider, {})
     const sandbox = ctx.sandbox as WriteProtectSandboxProvider
@@ -62,12 +66,14 @@ describe.skipIf(!usable)('bwrap 真实执法 (linux)', () => {
       workspaceRoot: ws,
       readOnlyPaths: [protectedDir],
       writablePaths: [extra],
+      ...extraPolicy,
     })
     const spawned = spawnSync(confined.argv[0]!, confined.argv.slice(1), { encoding: 'utf8' })
     return {
       runner: confined.argv[0]!,
       enforcement: confined.enforcement,
       status: spawned.status,
+      stdout: spawned.stdout ?? '',
       stderr: spawned.stderr ?? '',
     }
   }
@@ -98,5 +104,19 @@ describe.skipIf(!usable)('bwrap 真实执法 (linux)', () => {
     const result = await runConfined(`echo shared > ${JSON.stringify(marker)}`)
     expect(result.status).toBe(0)
     expect(existsSync(marker)).toBe(true)
+  })
+
+  const wslDrive = '/mnt/c'
+  const wslInterop = '/run/WSL'
+  const onWsl = existsSync(wslDrive) && existsSync(wslInterop)
+
+  it.skipIf(!onWsl)('WSL 加固后 Windows 盘与 interop 套接字不可见', async () => {
+    const hidden = await runConfined(`test ! -e ${JSON.stringify(wslDrive)} && test -d ${JSON.stringify(wslInterop)} && test -z "$(ls -A ${JSON.stringify(wslInterop)} 2>/dev/null)"`)
+    expect(hidden.status).toBe(0)
+  })
+
+  it.skipIf(!onWsl)('关掉 WSL 加固后 Windows 盘仍可见', async () => {
+    const visible = await runConfined(`test -d ${JSON.stringify(wslDrive)}`, { hardenWsl: false })
+    expect(visible.status).toBe(0)
   })
 })

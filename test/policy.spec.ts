@@ -7,11 +7,11 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import {
-  ALLOW_REQUESTS_FIELD, DEFAULT_ALLOW_REQUESTS, DEFAULT_HARDEN_BROKER,
+  ALLOW_REQUESTS_FIELD, DEFAULT_ALLOW_REQUESTS, DEFAULT_HARDEN_BROKER, DEFAULT_HARDEN_WSL,
   DEFAULT_MAX_GRANTS, DEFAULT_MAX_READONLY_ENTRIES, DEFAULT_READONLY_FILE_NAME,
   DEFAULT_READ_ONLY_PATHS, DEFAULT_WATCH_PROTECTED_PATHS, DEFAULT_WATCH_TTL_MAX_MS,
   DEFAULT_WATCH_TTL_MIN_MS, DEFAULT_WRITABLE_PATHS,
-  HARDEN_BROKER_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
+  HARDEN_BROKER_FIELD, HARDEN_WSL_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
   PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD,
   WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../src/constants.ts'
@@ -33,6 +33,7 @@ interface FakeSettings {
 function fakeSettings(config: Partial<Config>): FakeSettings {
   const state: Record<string, unknown> = {
     [HARDEN_BROKER_FIELD]: config.hardenBroker ?? DEFAULT_HARDEN_BROKER,
+    [HARDEN_WSL_FIELD]: config.hardenWsl ?? DEFAULT_HARDEN_WSL,
     [READONLY_FILE_FIELD]: config.readonlyFileName ?? DEFAULT_READONLY_FILE_NAME,
     [MAX_READONLY_ENTRIES_FIELD]: config.maxReadOnlyEntries ?? DEFAULT_MAX_READONLY_ENTRIES,
     [MAX_GRANTS_FIELD]: config.maxGrants ?? DEFAULT_MAX_GRANTS,
@@ -70,6 +71,7 @@ async function setup(config: Partial<Config> = {}): Promise<{
     patterns: ref<string | undefined>(PATTERNS_FIELD),
     writablePatterns: ref<string | undefined>(WRITABLE_FIELD),
     hardenBroker: ref<boolean>(HARDEN_BROKER_FIELD),
+    hardenWsl: ref<boolean>(HARDEN_WSL_FIELD),
     readonlyFileName: ref<string>(READONLY_FILE_FIELD),
     maxReadOnlyEntries: ref<number>(MAX_READONLY_ENTRIES_FIELD),
     maxGrants: ref<number>(MAX_GRANTS_FIELD),
@@ -119,6 +121,23 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     const { policy, settings } = await setup()
     settings.save({ [HARDEN_BROKER_FIELD]: false })
     expect(policy.resolve({}).hardenBroker).toBe(false)
+  })
+
+  it('resolve() 注入 WSL 加固开关, 缺省开启', async () => {
+    const { policy, settings } = await setup()
+    expect(policy.resolve({}).hardenWsl).toBe(true)
+    expect(settings.base()[HARDEN_WSL_FIELD]).toBe(true)
+  })
+
+  it('部署 base 关掉 WSL 加固后 resolve() 为 false', async () => {
+    const { policy } = await setup({ hardenWsl: false })
+    expect(policy.resolve({}).hardenWsl).toBe(false)
+  })
+
+  it('设置页保存的 WSL 开关覆盖部署 base', async () => {
+    const { policy, settings } = await setup({ hardenWsl: false })
+    settings.save({ [HARDEN_WSL_FIELD]: true })
+    expect(policy.resolve({}).hardenWsl).toBe(true)
   })
 
   it('resolve() 注入生效的保护路径原文, 供 fs 围栏按模式判定', async () => {
