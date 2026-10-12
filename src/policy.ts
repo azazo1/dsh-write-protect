@@ -40,6 +40,7 @@ import {
   DEFAULT_MAX_GRANTS,
   DEFAULT_MAX_READONLY_ENTRIES,
   DEFAULT_READONLY_FILE_NAME,
+  DEFAULT_READ_DENY_PATHS,
   DEFAULT_READ_ONLY_PATHS,
   DEFAULT_WATCH_PROTECTED_PATHS,
   DEFAULT_WATCH_TTL_MAX_MS,
@@ -86,6 +87,12 @@ export interface Config {
    * 保护路径优先. 用户保存过 writablePatterns 文本后该数组不再生效.
    */
   writablePaths?: string[] | Volatile<string[]>
+  /**
+   * 读拒绝路径部署 base: 每项一行 gitignore 语义模式, 数组逐行合并为生效文本.
+   * 与保护路径同一套语义 (锚定 / 通配 / 取反 / `//` 绝对条目); 工作区规则文件
+   * 只参与写保护, 不进这份清单. 用户保存过 readDenyPatterns 文本后该数组不再生效.
+   */
+  readDenyPaths?: string[] | Volatile<string[]>
   /**
    * macOS Seatbelt broker 逃逸加固的部署 base, 缺省开启 (见
    * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
@@ -139,6 +146,8 @@ export interface Config {
   patterns?: string | Volatile<string>
   /** 用户保存的额外可写根多行文本; 缺省回退 writablePaths. */
   writablePatterns?: string | Volatile<string>
+  /** 用户保存的读拒绝路径多行文本; 缺省回退 readDenyPaths. */
+  readDenyPatterns?: string | Volatile<string>
 }
 
 function currentConfigValue<T>(value: T | Volatile<T> | undefined, fallback: T): T {
@@ -149,8 +158,12 @@ function currentConfigValue<T>(value: T | Volatile<T> | undefined, fallback: T):
   return current === undefined ? fallback : current
 }
 
-/** 会话事件里用得到的部分: 只读 id 与 header.cwd (agent/status 事件也带这个形状). */
-interface SessionLike {
+/** 一次展开的缓存键: 三份文本任一变化都必须重新展开. */
+function expansionKey(readOnlyText: string, writableText: string, readDenyText: string): string {
+  return [readOnlyText, writableText, readDenyText].join('\u0000')
+}
+
+/** 会话事件里用得到的部分: 只读 id 与 header.cwd (agent/status 事件也带这个形状). */interface SessionLike {
   readonly id: string
   readonly header?: { readonly cwd?: string }
 }
@@ -161,6 +174,12 @@ export interface PolicySnapshot {
   readonly readOnly: readonly string[]
   readonly writable: readonly string[]
   readonly overrides: readonly string[]
+  /** 生效的读拒绝路径原文 (只来自插件配置). */
+  readonly readDenyPatterns: string
+  /** 展开缓存里已有的读拒绝路径清单 (冷缓存时为空). */
+  readonly readDeny: readonly string[]
+  /** 本会话经审批得到的全部授权路径 (保护旁路 + 工作区外额外根). */
+  readonly sessionGrantPaths: readonly string[]
 }
 
 /** 设置页三项新配置的取值来源 (用户覆盖优先, 否则部署 base). */
@@ -192,6 +211,8 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     writablePaths: z.array(z.string()).default([...DEFAULT_WRITABLE_PATHS]).volatile(),
     patterns: z.string().volatile(),
     writablePatterns: z.string().volatile(),
+    readDenyPaths: z.array(z.string()).default([...DEFAULT_READ_DENY_PATHS]).volatile(),
+    readDenyPatterns: z.string().volatile(),
     hardenBroker: z.boolean().default(DEFAULT_HARDEN_BROKER).volatile(),
     hardenWsl: z.boolean().default(DEFAULT_HARDEN_WSL).volatile(),
     readonlyFileName: z.string().default(DEFAULT_READONLY_FILE_NAME).volatile(),
@@ -225,6 +246,7 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     super(ctx, config)
     const entries = currentConfigValue(config.readOnlyPaths, [...DEFAULT_READ_ONLY_PATHS])
     const writableEntries = currentConfigValue(config.writablePaths, [...DEFAULT_WRITABLE_PATHS])
+    const readDenyEntries = currentConfigValue(config.readDenyPaths, [...DEFAULT_READ_DENY_PATHS])
     for (const entry of entries) {
       if (entry.trim().length === 0) {
         throw new Error('dsh-write-protect: readOnlyPaths entries must be non-empty strings')
@@ -233,6 +255,11 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     for (const entry of writableEntries) {
       if (entry.trim().length === 0) {
         throw new Error('dsh-write-protect: writablePaths entries must be non-empty strings')
+      }
+    }
+    for (const entry of readDenyEntries) {
+      if (entry.trim().length === 0) {
+        throw new Error('dsh-write-protect: readDenyPaths entries must be non-empty strings')
       }
     }
 
@@ -285,16 +312,24 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           if (source.length > 0) {
             parts.push(`The workspace read-only rules file "${source}" contributes to those patterns; it is read from the session workspace root and cannot be modified by any tool or command.`)
           }
+          const readDeny = policy.readDenyPatterns ?? ''
+          if (readDeny.trim().length > 0) {
+            parts.push(`Read-denied patterns (same gitignore semantics; the read tools and every sandboxed command refuse to read these paths, and grep / glob results never contain them; danger-full-access is unrestricted): ${JSON.stringify(readDeny)}.`)
+          }
           const writable = policy.writablePaths ?? []
           if (writable.length > 0) {
             parts.push(`Additional writable roots under workspace-write (sandboxed commands and write/edit tools may write here; write-protected paths still win; does not apply in read-only): ${JSON.stringify(writable)}.`)
           }
           const overrides = policy.writableOverrides ?? []
           if (overrides.length > 0) {
-            parts.push(`Session write grants that bypass write protection for the write/edit tools and for sandboxed commands: ${JSON.stringify(overrides)}.`)
+            parts.push(`Session grants that bypass write protection for the write/edit tools and for sandboxed commands: ${JSON.stringify(overrides)}.`)
+          }
+          const sessionGrants = policy.sessionGrantPaths ?? []
+          if (sessionGrants.length > 0 && (policy.readDenyPatterns ?? '').trim().length > 0) {
+            parts.push(`A session grant also unlocks reading its path and everything under it: ${JSON.stringify(sessionGrants)}.`)
           }
           if (this.currentLimits().allowWritableRequests) {
-            parts.push(`Extra write access is not granted by default. Call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} when the task will keep writing the same protected path or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on); a single file is written with the ordinary write/edit tools, and if that write is denied, leave it at that. The user decides in an approval prompt, and the grant lasts only for this session. The user can also withdraw a grant at any time from the session's write-access panel; a withdrawn grant disappears from the lists above and you receive a notice naming the path.`)
+            parts.push(`Extra write access is not granted by default. Call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} when the task will keep writing the same protected path or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on); a single file is written with the ordinary write/edit tools, and if that write is denied, leave it at that. The same grant is what unlocks a read-denied path, so use it there too. The user decides in an approval prompt, and the grant lasts only for this session. The user can also withdraw a grant at any time from the session's write-access panel; a withdrawn grant disappears from the lists above and you receive a notice naming the path.`)
           } else {
             parts.push('Extra write access is not granted by this deployment: do not ask for it.')
           }
@@ -371,6 +406,16 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return currentConfigValue(this.config.writablePatterns, this.writableBaseText())
   }
 
+  /** 部署 base 的读拒绝路径文本形态 (patch 数组逐行合并). */
+  private readDenyBaseText(): string {
+    return currentConfigValue(this.config.readDenyPaths, [...DEFAULT_READ_DENY_PATHS]).join('\n')
+  }
+
+  /** 当前生效的读拒绝文本: 用户保存过的 readDenyPatterns 覆盖部署 base. */
+  private currentReadDenyText(): string {
+    return currentConfigValue(this.config.readDenyPatterns, this.readDenyBaseText())
+  }
+
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker(): boolean {
     return currentConfigValue(this.config.hardenBroker, DEFAULT_HARDEN_BROKER)
@@ -405,19 +450,27 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   private expansionInputs(workspaceRoot: string): ExpansionInputs {
     const readOnlyText = this.readOnlyTextAt(workspaceRoot)
     const writableText = this.currentWritableText()
-    return { key: [readOnlyText, writableText].join('\u0000'), readOnlyText, writableText }
+    const readDenyText = this.currentReadDenyText()
+    return {
+      key: expansionKey(readOnlyText, writableText, readDenyText),
+      readOnlyText,
+      writableText,
+      readDenyText,
+    }
   }
 
   /** 真正执行一次展开, 并把各条告警去重后写日志. */
   private async expandNow(workspaceRoot: string, inputs: ExpansionInputs): Promise<ExpansionSnapshot> {
     const readOnly = await expandReadOnlyPaths(inputs.readOnlyText, workspaceRoot)
+    const readDeny = await expandReadOnlyPaths(inputs.readDenyText, workspaceRoot)
     const writable = expandWritablePaths(inputs.writableText, workspaceRoot)
-    for (const warning of [...readOnly.warnings, ...writable.warnings]) {
+    for (const warning of [...readOnly.warnings, ...readDeny.warnings, ...writable.warnings]) {
       this.warn(warning)
     }
     return {
       readOnly: readOnly.paths,
       writable: writable.paths,
+      readDeny: readDeny.paths,
       patterns: inputs.readOnlyText,
     }
   }
@@ -614,25 +667,31 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
    * @param sessionId - 调用所属会话, 缺省表示无会话调用.
    */
   private snapshot(workspaceRoot: string | undefined, sessionId: string | undefined): PolicySnapshot {
-    const settingsText = this.currentText()
+    const readDenyPatterns = this.currentReadDenyText()
     const record = sessionId === undefined ? { extraRoots: [], overrides: [], grants: [] } : this.grants.recordOf(sessionId)
+    const sessionGrantPaths = [...record.extraRoots, ...record.overrides]
     if (workspaceRoot === undefined) {
       return {
-        readOnlyPatterns: settingsText,
+        readOnlyPatterns: this.currentText(),
         readOnly: [],
         writable: [...record.extraRoots],
         overrides: record.overrides,
+        readDenyPatterns,
+        readDeny: [],
+        sessionGrantPaths,
       }
     }
-    const readOnlyPatterns = this.readOnlyTextAt(workspaceRoot)
-    const writableText = this.currentWritableText()
-    const cached = this.refresher.peek(workspaceRoot, [readOnlyPatterns, writableText].join('\u0000'))
-    const writable = cached?.writable ?? this.expandWritable(writableText, workspaceRoot)
+    const inputs = this.expansionInputs(workspaceRoot)
+    const cached = this.refresher.peek(workspaceRoot, inputs.key)
+    const writable = cached?.writable ?? this.expandWritable(inputs.writableText, workspaceRoot)
     return {
-      readOnlyPatterns,
+      readOnlyPatterns: inputs.readOnlyText,
       readOnly: cached?.readOnly ?? [],
       writable: [...record.extraRoots, ...writable],
       overrides: record.overrides,
+      readDenyPatterns,
+      readDeny: cached?.readDeny ?? [],
+      sessionGrantPaths,
     }
   }
 
@@ -656,6 +715,9 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     policy.readOnlyPaths = snapshot.readOnly
     policy.writablePaths = snapshot.writable
     policy.writableOverrides = snapshot.overrides
+    policy.readDenyPatterns = snapshot.readDenyPatterns
+    policy.readDenyPaths = snapshot.readDeny
+    policy.sessionGrantPaths = snapshot.sessionGrantPaths
     policy.rulesFilePath = root === undefined ? undefined : this.rulesFilePath(root)
     policy.hardenBroker = this.currentHardenBroker()
     policy.hardenWsl = this.currentHardenWsl()
@@ -688,6 +750,9 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
       readOnlyPaths: snapshot.readOnly,
       writablePaths: snapshot.writable,
       writableOverrides: snapshot.overrides,
+      readDenyPatterns: snapshot.readDenyPatterns,
+      readDenyPaths: snapshot.readDeny,
+      sessionGrantPaths: snapshot.sessionGrantPaths,
       rulesFilePath: workspaceRoot === undefined ? undefined : this.rulesFilePath(workspaceRoot),
       hardenBroker: this.currentHardenBroker(),
       hardenWsl: this.currentHardenWsl(),

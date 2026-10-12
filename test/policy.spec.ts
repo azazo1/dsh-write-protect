@@ -9,10 +9,11 @@ import { describe, expect, it } from 'vitest'
 import {
   ALLOW_REQUESTS_FIELD, DEFAULT_ALLOW_REQUESTS, DEFAULT_HARDEN_BROKER, DEFAULT_HARDEN_WSL,
   DEFAULT_MAX_GRANTS, DEFAULT_MAX_READONLY_ENTRIES, DEFAULT_READONLY_FILE_NAME,
+  DEFAULT_READ_DENY_PATHS,
   DEFAULT_READ_ONLY_PATHS, DEFAULT_WATCH_PROTECTED_PATHS, DEFAULT_WATCH_TTL_MAX_MS,
   DEFAULT_WATCH_TTL_MIN_MS, DEFAULT_WRITABLE_PATHS,
   HARDEN_BROKER_FIELD, HARDEN_WSL_FIELD, MAX_GRANTS_FIELD, MAX_READONLY_ENTRIES_FIELD,
-  PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD,
+  PATTERNS_FIELD, READONLY_FILE_FIELD, READ_DENY_FIELD, WATCH_FIELD, WATCH_TTL_MAX_FIELD,
   WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../src/constants.ts'
 import { WriteProtectPolicyService, type Config } from '../src/policy.ts'
@@ -43,6 +44,7 @@ function fakeSettings(config: Partial<Config>): FakeSettings {
     [WATCH_TTL_MAX_FIELD]: config.watchTtlMaxMs ?? DEFAULT_WATCH_TTL_MAX_MS,
     [PATTERNS_FIELD]: config.patterns,
     [WRITABLE_FIELD]: config.writablePatterns,
+    [READ_DENY_FIELD]: config.readDenyPatterns,
   }
   return {
     save(section) {
@@ -68,8 +70,10 @@ async function setup(config: Partial<Config> = {}): Promise<{
     ...config,
     readOnlyPaths: config.readOnlyPaths ?? [...DEFAULT_READ_ONLY_PATHS],
     writablePaths: config.writablePaths ?? [...DEFAULT_WRITABLE_PATHS],
+    readDenyPaths: config.readDenyPaths ?? [...DEFAULT_READ_DENY_PATHS],
     patterns: ref<string | undefined>(PATTERNS_FIELD),
     writablePatterns: ref<string | undefined>(WRITABLE_FIELD),
+    readDenyPatterns: ref<string | undefined>(READ_DENY_FIELD),
     hardenBroker: ref<boolean>(HARDEN_BROKER_FIELD),
     hardenWsl: ref<boolean>(HARDEN_WSL_FIELD),
     readonlyFileName: ref<string>(READONLY_FILE_FIELD),
@@ -261,6 +265,57 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
+  })
+})
+
+describe('WriteProtectPolicyService 的读拒绝', () => {
+  it('默认不配任何读拒绝条目', async () => {
+    const { policy } = await setup()
+    const resolved = policy.resolve({})
+    expect(resolved.readDenyPatterns).toBe('')
+    expect(resolved.readDenyPaths).toEqual([])
+  })
+
+  it('readDenyPaths 部署 base 与设置页文本走同一套覆盖关系', async () => {
+    const { policy, settings } = await setup({ readDenyPaths: ['secret', '//etc/pki'] })
+    expect(policy.resolve({}).readDenyPatterns).toBe('secret\n//etc/pki')
+    settings.save({ [READ_DENY_FIELD]: '/vault' })
+    expect(policy.resolve({}).readDenyPatterns).toBe('/vault')
+  })
+
+  it('读拒绝清单按工作区根异步展开, 与写保护清单各自独立', async () => {
+    const workspace = realpathSync(mkdtempSync(join(projectTmpDir(), 'dsh-wp-readdeny-')))
+    mkdirSync(join(workspace, 'secret'))
+    try {
+      const { policy } = await setup({
+        workspaceRoot: workspace,
+        readOnlyPaths: ['protected/'],
+        readDenyPaths: ['secret/'],
+      })
+      const snapshot = await policy.materialize(workspace)
+      expect(snapshot.readOnly).toEqual([])
+      expect(snapshot.readDeny).toEqual([join(workspace, 'secret')])
+      const resolved = policy.resolve({ session: sessionStub(workspace) })
+      expect(resolved.readDenyPaths).toEqual([join(workspace, 'secret')])
+      expect(resolved.readDenyPatterns).toBe('secret/')
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('会话无 cwd 时不展开读拒绝清单, 只保留原文', async () => {
+    const { policy } = await setup({ readDenyPaths: ['secret/'] })
+    const resolved = policy.resolve({})
+    expect(resolved.readDenyPatterns).toBe('secret/')
+    expect(resolved.readDenyPaths).toEqual([])
+  })
+
+  it('提示词声明读拒绝范围与"授权同时解锁读"', async () => {
+    const { policy, promptText } = await setup({ readDenyPaths: ['secret'] })
+    void policy
+    const text = promptText()
+    expect(text).toContain('Read-denied patterns')
+    expect(text).toContain('unlocks a read-denied path')
   })
 })
 

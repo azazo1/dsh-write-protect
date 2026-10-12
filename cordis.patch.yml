@@ -10,9 +10,10 @@
 # applies changes live; no `dsh web` restart is needed for config edits.
 #
 # The patch swaps the stock sandbox rows for this package's own:
-#   - `sandbox-policy`        -> policy.ts   (resolve() 注入 readOnlyPaths / writablePaths)
+#   - `sandbox-policy`        -> policy.ts   (resolve() 注入 readOnlyPaths / writablePaths / readDenyPaths)
 #   - `fs-sandbox`            -> fs.ts       (write/edit 拒绝保护路径, 全平台)
-#   - `sandbox` (linux/darwin) -> provider.ts (bwrap ro-bind / Seatbelt deny 追加)
+#   - (新增行)                 -> read-fence.ts (read 一类工具拒绝读拒绝路径, 全平台)
+#   - `sandbox` (linux/darwin) -> provider.ts (bwrap 挂载 / Seatbelt deny 追加, 写与读两侧)
 #
 # Patch semantics (applyEntryPatches): a targeted patch may only override
 # fields — the plugin `name` cannot change — so swapping a plugin means
@@ -46,6 +47,11 @@
     # fs 围栏半区: write/edit 工具拒绝写入保护路径 (全平台).
     - id: dsh-write-protect-fs
       name: dsh-write-protect/fs
+
+    # 读拒绝围栏半区: read / read_image / grep / glob / str_replace_editor(view)
+    # 在工具派发前拒绝读拒绝路径, 并在 grep / glob 结果里滤掉落在其中的条目 (全平台).
+    - id: dsh-write-protect-read-fence
+      name: dsh-write-protect/read-fence
 
     # 进程沙箱半区: bash 等被沙箱约束的子进程 (仅 Linux/macOS).
     - id: dsh-write-protect-provider

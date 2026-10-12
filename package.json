@@ -7,6 +7,7 @@
   "exports": {
     ".": "./lib/policy.mjs",
     "./fs": "./lib/fs.mjs",
+    "./read-fence": "./lib/read-fence.mjs",
     "./provider": "./lib/provider.mjs",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"

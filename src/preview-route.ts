@@ -39,16 +39,21 @@ export interface PreviewPolicyHost {
 function decodeDraft(value: unknown): {
   patterns: string
   writablePatterns: string
+  readDenyPatterns: string
   workspaceRoot?: string
 } {
   if (typeof value !== 'object' || value === null) throw new Error('preview body must be an object')
   const record = value as Record<string, unknown>
   const patterns = record.patterns
   const writablePatterns = record.writablePatterns
+  const readDenyPatterns = record.readDenyPatterns
   const workspaceRoot = record.workspaceRoot
   if (patterns !== undefined && typeof patterns !== 'string') throw new Error('patterns must be a string')
   if (writablePatterns !== undefined && typeof writablePatterns !== 'string') {
     throw new Error('writablePatterns must be a string')
+  }
+  if (readDenyPatterns !== undefined && typeof readDenyPatterns !== 'string') {
+    throw new Error('readDenyPatterns must be a string')
   }
   if (workspaceRoot !== undefined && typeof workspaceRoot !== 'string') {
     throw new Error('workspaceRoot must be a string')
@@ -57,6 +62,7 @@ function decodeDraft(value: unknown): {
   return {
     patterns: typeof patterns === 'string' ? patterns : '',
     writablePatterns: typeof writablePatterns === 'string' ? writablePatterns : '',
+    readDenyPatterns: typeof readDenyPatterns === 'string' ? readDenyPatterns : '',
     ...trimmedRoot.length > 0 ? { workspaceRoot: trimmedRoot } : {},
   }
 }
@@ -107,7 +113,7 @@ export function mountPreviewRoute(
           ? []
           : host.grantsView().recordsForWorkspace(workspaceRoot, sessionId => host.workspaceRootOfSession(sessionId))
         return Response.json({
-          ...await previewPaths(draft.patterns, draft.writablePatterns, workspaceRoot, readPreviewFile(host, workspaceRoot), grants),
+          ...await previewPaths(draft.patterns, draft.writablePatterns, workspaceRoot, readPreviewFile(host, workspaceRoot), grants, draft.readDenyPatterns),
         })
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)

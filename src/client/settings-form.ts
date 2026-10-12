@@ -12,7 +12,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, HARDEN_WSL_FIELD, MAX_GRANTS_FIELD,
-  MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD,
+  MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, READONLY_FILE_FIELD, READ_DENY_FIELD, WATCH_FIELD,
   WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../constants.ts'
 
@@ -20,8 +20,10 @@ import {
 export interface WriteProtectSettings {
   readOnlyPaths?: string[]
   writablePaths?: string[]
+  readDenyPaths?: string[]
   patterns?: string
   writablePatterns?: string
+  readDenyPatterns?: string
   hardenBroker?: boolean
   hardenWsl?: boolean
   readonlyFileName?: string
@@ -54,6 +56,7 @@ function settingsBooleanField(field: string): SettingsFieldSpec {
 export interface WriteProtectCardState extends SettingsFormShell {
   patterns: SettingsFieldState
   writablePatterns: SettingsFieldState
+  readDenyPatterns: SettingsFieldState
   readonlyFileName: SettingsFieldState
   maxReadOnlyEntries: SettingsFieldState
   maxGrants: SettingsFieldState
@@ -73,12 +76,14 @@ export interface WriteProtectCardFace extends SettingsFormActions {
   }
 }
 
-/** 卡片暴露给预览面板的两个文本. */
+/** 卡片暴露给预览面板的三个文本. */
 export interface WriteProtectTexts {
   /** 保护路径文本, `patterns` 缺席时回落到 `readOnlyPaths`. */
   patterns: string
   /** 可写路径文本, `writablePatterns` 缺席时回落到 `writablePaths`. */
   writablePatterns: string
+  /** 读拒绝路径文本, `readDenyPatterns` 缺席时回落到 `readDenyPaths`. */
+  readDenyPatterns: string
 }
 
 /** 把 policy 条目的配置表单桥接成配置卡片的暂存表单. */
@@ -93,6 +98,7 @@ export class WriteProtectSettingsForm {
     this.form = new SettingsFormModel(scope, [
       settingsTextField(PATTERNS_FIELD),
       settingsTextField(WRITABLE_FIELD),
+      settingsTextField(READ_DENY_FIELD),
       settingsTextField(READONLY_FILE_FIELD),
       settingsNumberField(MAX_READONLY_ENTRIES_FIELD),
       settingsNumberField(MAX_GRANTS_FIELD),
@@ -122,9 +128,11 @@ export class WriteProtectSettingsForm {
     const value = this.scope.getSnapshot().value
     const patterns = this.form.field(PATTERNS_FIELD).text
     const writable = this.form.field(WRITABLE_FIELD).text
+    const readDeny = this.form.field(READ_DENY_FIELD).text
     return {
       patterns: patterns !== '' ? patterns : (value?.readOnlyPaths ?? []).join('\n'),
       writablePatterns: writable !== '' ? writable : (value?.writablePaths ?? []).join('\n'),
+      readDenyPatterns: readDeny !== '' ? readDeny : (value?.readDenyPaths ?? []).join('\n'),
     }
   }
 
@@ -138,12 +146,15 @@ export class WriteProtectSettingsForm {
     const value = this.scope.getSnapshot().value
     const patterns = this.form.field(PATTERNS_FIELD)
     const writablePatterns = this.form.field(WRITABLE_FIELD)
+    const readDenyPatterns = this.form.field(READ_DENY_FIELD)
     const fallbackPatterns = (value?.readOnlyPaths ?? []).join('\n')
     const fallbackWritable = (value?.writablePaths ?? []).join('\n')
+    const fallbackReadDeny = (value?.readDenyPaths ?? []).join('\n')
     return {
       ...this.form.shell(),
       patterns: patterns.text === '' && fallbackPatterns !== '' ? { ...patterns, text: fallbackPatterns } : patterns,
       writablePatterns: writablePatterns.text === '' && fallbackWritable !== '' ? { ...writablePatterns, text: fallbackWritable } : writablePatterns,
+      readDenyPatterns: readDenyPatterns.text === '' && fallbackReadDeny !== '' ? { ...readDenyPatterns, text: fallbackReadDeny } : readDenyPatterns,
       readonlyFileName: this.form.field(READONLY_FILE_FIELD),
       maxReadOnlyEntries: this.form.field(MAX_READONLY_ENTRIES_FIELD),
       maxGrants: this.form.field(MAX_GRANTS_FIELD),

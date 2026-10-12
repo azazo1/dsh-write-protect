@@ -11,11 +11,13 @@
     "pluginNames": [
       "dsh-write-protect-policy",
       "dsh-write-protect-fs",
+      "dsh-write-protect-read-fence",
       "dsh-write-protect-provider"
     ],
     "loaderIds": [
       "dsh-write-protect-policy",
       "dsh-write-protect-fs",
+      "dsh-write-protect-read-fence",
       "dsh-write-protect-provider"
     ],
     "services": [],

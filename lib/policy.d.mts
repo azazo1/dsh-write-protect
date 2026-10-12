@@ -88,6 +88,8 @@ declare class ReadOnlyFileCache {
 interface ExpansionSnapshot {
   readonly readOnly: readonly string[];
   readonly writable: readonly string[];
+  /** 读拒绝路径的枚举清单 (命令沙箱消费). */
+  readonly readDeny: readonly string[];
   readonly patterns: string;
 }
 //#endregion
@@ -116,6 +118,24 @@ declare module '@deepseek-ai/dsh-sandbox' {
      */
     readOnlyPatterns?: string;
     writablePaths?: readonly string[];
+    /**
+     * 生效的读拒绝路径配置**原文** (gitignore 语义, 与保护路径同一套解析).
+     * 只来自插件配置与部署 base: 工作区规则文件管的是写保护, 不参与读拒绝.
+     * 读拒绝围栏 (read 一类工具与命令沙箱) 按它逐路径判定. 缺省表示这份 policy
+     * 不是本插件的 policy service 生成的.
+     */
+    readDenyPatterns?: string;
+    /**
+     * 读拒绝路径的枚举清单: 命令沙箱 (bwrap 的 tmpfs / Seatbelt 的 subpath)
+     * 需要具体路径, 因此这一份由异步展开产出; 工具侧围栏不用它, 直接按模式原文判定.
+     */
+    readDenyPaths?: readonly string[];
+    /**
+     * 本会话经审批得到的全部授权路径 (工作区内的保护旁路 + 工作区外的额外可写根).
+     * 它既让命令侧把被授权的子树重新挂回可写, 也是读拒绝的放行依据 —— 用户批准
+     * 一条路径之后, 那条路径连同其后代既可以写也可以读.
+     */
+    sessionGrantPaths?: readonly string[];
     /**
      * 本会话经审批得到的保护旁路路径: 落在这些根之下的目标跳过保护路径判定.
      * 只由 write / edit 围栏消费; 命令侧的沙箱挂载 / profile 在命令执行前
@@ -234,6 +254,12 @@ export interface Config {
    */
   writablePaths?: string[] | Volatile<string[]>;
   /**
+   * 读拒绝路径部署 base: 每项一行 gitignore 语义模式, 数组逐行合并为生效文本.
+   * 与保护路径同一套语义 (锚定 / 通配 / 取反 / `//` 绝对条目); 工作区规则文件
+   * 只参与写保护, 不进这份清单. 用户保存过 readDenyPatterns 文本后该数组不再生效.
+   */
+  readDenyPaths?: string[] | Volatile<string[]>;
+  /**
    * macOS Seatbelt broker 逃逸加固的部署 base, 缺省开启 (见
    * `DEFAULT_HARDEN_BROKER`). 用户在设置页拨动开关后该值不再生效.
    */
@@ -286,6 +312,8 @@ export interface Config {
   patterns?: string | Volatile<string>;
   /** 用户保存的额外可写根多行文本; 缺省回退 writablePaths. */
   writablePatterns?: string | Volatile<string>;
+  /** 用户保存的读拒绝路径多行文本; 缺省回退 readDenyPaths. */
+  readDenyPatterns?: string | Volatile<string>;
 }
 /** 一次同步解析得到的生效文本, 本会话授权与缓存里已有的枚举清单. */
 export interface PolicySnapshot {
@@ -293,6 +321,12 @@ export interface PolicySnapshot {
   readonly readOnly: readonly string[];
   readonly writable: readonly string[];
   readonly overrides: readonly string[];
+  /** 生效的读拒绝路径原文 (只来自插件配置). */
+  readonly readDenyPatterns: string;
+  /** 展开缓存里已有的读拒绝路径清单 (冷缓存时为空). */
+  readonly readDeny: readonly string[];
+  /** 本会话经审批得到的全部授权路径 (保护旁路 + 工作区外额外根). */
+  readonly sessionGrantPaths: readonly string[];
 }
 /** 设置页三项新配置的取值来源 (用户覆盖优先, 否则部署 base). */
 export interface ResolvedConfigValues {
@@ -313,6 +347,8 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     writablePaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     patterns: z<string, string, "volatile">;
     writablePatterns: z<string, string, "volatile">;
+    readDenyPaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    readDenyPatterns: z<string, string, "volatile">;
     hardenBroker: z<boolean, boolean, "volatile-defined">;
     hardenWsl: z<boolean, boolean, "volatile-defined">;
     readonlyFileName: z<string, string, "volatile-defined">;
@@ -329,6 +365,8 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
     writablePaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
     patterns: z<string, string, "volatile">;
     writablePatterns: z<string, string, "volatile">;
+    readDenyPaths: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    readDenyPatterns: z<string, string, "volatile">;
     hardenBroker: z<boolean, boolean, "volatile-defined">;
     hardenWsl: z<boolean, boolean, "volatile-defined">;
     readonlyFileName: z<string, string, "volatile-defined">;
@@ -365,6 +403,10 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   private currentText;
   /** 当前生效的额外可写文本: 用户保存过的 writablePatterns 覆盖部署 base. */
   private currentWritableText;
+  /** 部署 base 的读拒绝路径文本形态 (patch 数组逐行合并). */
+  private readDenyBaseText;
+  /** 当前生效的读拒绝文本: 用户保存过的 readDenyPatterns 覆盖部署 base. */
+  private currentReadDenyText;
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker;
   /** 当前生效的 WSL 互操作加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */

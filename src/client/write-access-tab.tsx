@@ -96,6 +96,7 @@ export function WriteAccessTab(props: WriteAccessTabProps) {
       </div>
       <p className="dsh-wp-hint">
         本会话内存里的可写授权: 模型申请并经你批准的, 以及你在下面手动加的. 会话结束或重启 dsh 后自动消失.
+        一条授权同时放开那条路径的读与写: 读拒绝路径被授权覆盖之后, 读工具与沙箱命令都能读它了.
       </p>
       {view?.mode === 'read-only'
         ? <p className="dsh-wp-warning">当前是 read-only 模式: 这里加的授权要等会话切到 workspace-write 或 danger-full-access 之后才生效.</p>

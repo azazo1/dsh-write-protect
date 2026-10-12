@@ -1,10 +1,10 @@
 # dsh-write-protect
 
-给 DSH 沙箱补上工作区里某一段路径的只读保护, 典型用途是不让模型改 `.git`. 也可以在 `workspace-write` 下声明工作区外的额外可写根, 让 bash 与 write / edit 写到相邻目录, 而不必切到 `danger-full-access`.
+给 DSH 沙箱补上工作区里某一段路径的只读保护, 典型用途是不让模型改 `.git`. 也可以在 `workspace-write` 下声明工作区外的额外可写根, 让 bash 与 write / edit 写到相邻目录, 而不必切到 `danger-full-access`. 还能声明**读拒绝路径**: 命中的位置 read / grep / glob 这些工具与沙箱命令都读不到, 需要时由模型申请本会话授权, 同一条授权同时放开那条路径的读与写.
 
 工作区根还能放一份只读规则文件 (默认 `.readonly`), 与插件页配置里的保护路径同语义; 任务要反复写同一片受保护区域时, 模型也可以申请本会话的可写授权 (见下文两节). 会话区还有一个 "写入权限" tab: 在那里可以手动加临时可写根, 也可以把某条授权撤回, 撤回会通知模型.
 
-write / edit 工具在所有平台都会挡住保护路径, 并放行额外可写根. bash 等命令在 Linux / macOS 上同样生效; Windows 上 bash / pwsh 既挡不住 `.git`, 也拿不到额外可写根. 读取不受影响.
+write / edit 工具在所有平台都会挡住保护路径, 并放行额外可写根. bash 等命令在 Linux / macOS 上同样生效; Windows 上 bash / pwsh 既挡不住 `.git`, 也拿不到额外可写根. 读取默认不受影响, 只有配了读拒绝路径才会被挡 (见 "读拒绝路径" 一节).
 
 官方沙箱只有 "整个工作区可写" 和 "全只读" 两档, 管不到工作区内部的某一段, 也不能把工作区外的个别目录并进 allow-list; Codex 一类实现默认会保护 `.git`, 本插件补这一块.
 
@@ -30,7 +30,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 
 桌面端装进 `desktop` profile. 它由 Electron 应用独占管理, `dsh plugin` 会拒绝 `--profile desktop`, 所以要用应用内的插件管理器: 在插件页的安装入口填上面命令里对应的包名或 tarball 地址. 装上后重启应用, 窗口刷新一次.
 
-安装后会接管沙箱策略和 write / edit 围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`. web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多起一个 Host 子进程并给 `<html>` 打上平台标记, 所以同一份包在两边通用, 不需要分别构建.
+安装后会接管沙箱策略, write / edit 围栏与读拒绝的工具层围栏, Linux / macOS 上还会接管命令沙箱. 改配置即时生效, 不用重启 `dsh web`. web 与 desktop 两个 profile 跑的是同一套 Web 应用, 桌面端只是多起一个 Host 子进程并给 `<html>` 打上平台标记, 所以同一份包在两边通用, 不需要分别构建.
 
 引擎版本线要求 `@deepseek-ai/dsh-*` 不低于 `0.2.0-rc.1`, 且仍在 `0.2.x` 上 (peerDependencies 与 devDependencies 都写作 `>=0.2.0-rc.1 <0.3.0`). 已在 `0.2.0-rc.2` 上日常验证. 官方 `SandboxProvider.confine()` 自 `0.1.6-alpha.1` 起改为异步 (`Promise<ConfinedArgv>` 加 `signal` 参数), 插件配置自 `0.1.7` 起走 volatile Config (插件页的配置卡片经 configForms 读写); 本插件的覆写与配置面都按这条线走. 仍在 `0.1.7` 引擎线上的部署请继续用 v0.2.0, 更早的部署请继续用 v0.1.1.
 
@@ -47,6 +47,7 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
     # 部署级覆盖示例.
     # readOnlyPaths: ['.git', '//etc/pki']
     # writablePaths: ['../shared-scratch', '//tmp/dsh-extra']
+    # readDenyPaths: ['secret', '//etc/pki']
     # hardenBroker: false
     # hardenWsl: false
     # readonlyFileName: '.readonly'   # 置空即关闭工作区规则文件识别
@@ -80,6 +81,13 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 - 只在 `workspace-write` 下并进 allow-list, 不打穿 `read-only`. 保护路径优先: 额外根内部仍可被保护.
 - 置为空列表即不额外放行.
 
+`readDenyPaths` 的每一项与 `readOnlyPaths` 同一套语义 (gitignore 模式, 含 `//` 绝对条目与 `!` 取反), 但作用在读上: 命中的路径 `read` / `read_image` / `grep` / `glob` / `str_replace_editor`(仅 `view`) 会被拒绝, 沙箱命令同样读不到. 默认空列表, 即默认不禁止任何读取.
+
+- 会话授权同时解锁读: `request_writable_path` 批准过的路径连同其后代既可写也可读, 工具侧与命令侧一致.
+- `read-only` 下同样生效 (`read-only` 限制的是写, 读本来是全开的); `danger-full-access` 下不介入.
+- 它不读工作区的只读规则文件: `.readonly` 那份文件只参与写保护.
+- 用户在插件页保存过读拒绝文本后, 这个数组不再生效 (与另外两份文本同一套覆盖规则).
+
 `hardenBroker` 是 macOS broker 逃逸加固的部署 base, 布尔值, 缺省 `true`:
 
 - 开启时在 Seatbelt profile 末尾追加 broker 拒绝形式 (见 "保护范围").
@@ -102,14 +110,15 @@ dsh plugin --profile web add https://github.com/azazo1/dsh-write-protect/release
 | `src/gitignore.ts` | gitignore 语义的解析与**逐路径匹配** (`PatternSet.match`), 规则文件校验与可写申请的保护判定共用 | 纯字符串/正则, **零运行时依赖** |
 | `src/patterns.ts` | 把模式**枚举**成具体路径, 供保护路径清单与命令沙箱使用 | `node:fs`、`canonicalPath` |
 | `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱策略、进程沙箱 argv 叠加 | DSH 引擎 |
+| `src/read-fence.ts` | 读拒绝的工具层围栏 (`tools/pre-execute` 判定与 `grep` / `glob` 结果过滤) | DSH 引擎 |
 
-`src/readonly-file.ts` 负责工作区只读规则文件的读取与缓存, `src/path-expand.ts` 负责额外可写根的字面路径展开, `src/request-writable-path.ts` 是可写申请的授权表与 `request_writable_path` 工具, `src/grants-route.ts` 与 `src/grant-notice.ts` 分别是会话面板的 `/api` 路由与撤回通知, `src/seatbelt.ts` 与 `src/wsl.ts` 分别是 macOS broker 加固与 WSL 互操作加固.
+`src/readonly-file.ts` 负责工作区只读规则文件的读取与缓存, `src/path-expand.ts` 负责额外可写根的字面路径展开, `src/request-writable-path.ts` 是可写申请的授权表与 `request_writable_path` 工具, `src/grants-route.ts` 与 `src/grant-notice.ts` 分别是会话面板的 `/api` 路由与撤回通知, `src/seatbelt.ts` 与 `src/wsl.ts` 分别是 macOS broker 加固, Seatbelt 形式的生成与 WSL 互操作加固.
 
 ## 插件页配置
 
 <img src="https://raw.githubusercontent.com/azazo1/dsh-write-protect/HEAD/docs/screenshots/settings-page.png" alt="写入保护插件页配置" width="520">
 
-插件页里 dsh-write-protect 卡片上的配置表单, 从上到下是: 保护路径与额外可写根两个多行文本, 工作区只读规则文件名与最多条目数, 单会话可写授权上限, macOS broker 逃逸加固, WSL 互操作加固, 模型申请可写路径, 监听工作区变化, 以及刷新下界与上界两个毫秒值. 草稿只留在卡片里, 点 "保存" 才写进 profile 的 patch 层并实时生效; 预览面板按当前草稿展开, 不必先保存:
+插件页里 dsh-write-protect 卡片上的配置表单, 从上到下是: 保护路径与额外可写根两个多行文本, 读拒绝路径, 工作区只读规则文件名与最多条目数, 单会话可写授权上限, macOS broker 逃逸加固, WSL 互操作加固, 模型申请可写路径, 监听工作区变化, 以及刷新下界与上界两个毫秒值. 草稿只留在卡片里, 点 "保存" 才写进 profile 的 patch 层并实时生效; 预览面板按当前草稿展开, 不必先保存:
 
 ```text
 # 保护路径
@@ -126,10 +135,18 @@ $HOME/scratch
 /tmp/dsh-extra
 ```
 
+```text
+# 读拒绝路径
+secret
+//etc/pki
+!secret/public.pem
+```
+
 - 保护路径: `#` 开头是注释, 空行忽略; `!` 排除, 按最后匹配生效; 不能在仍受保护的目录内部重新放行后代. 通配与锚定语义同 "配置" 一节. Windows 上的绝对条目写作 `//C:/Users/me/secret`: gitignore 语义里 `\` 是转义符, `/` 才是分隔符.
 - 额外可写根: 每行一条字面路径, 不要通配. `~` / `~/...` 为家目录, `$NAME` / `${NAME}` 为环境变量; 绝对路径按文件系统解析, 相对路径 (含 `..`) 相对当前会话工作区. Windows 上 `\` 是分隔符而不是转义符, `C:\Users\me\caches` 与 `~\caches` 都按字面解析; 盘符相对路径 (`C:caches`) 的落点取决于进程当前目录, 会被拒绝并出现在 "未生效" 里.
-- 两份文本都按当前会话的工作区根解析, 每个会话各自生效. 开关是全局的, 与工作区无关.
-- 预览按钮把当前草稿交给 Host 展开, 不必先保存: 列出生效的保护路径与额外可写根, 工作区规则文件的条目, 本会话已批准的可写授权, 以及被忽略或拒绝的行. 展开使用当前选中会话的 cwd (即被主视图持有的那条会话记录); 没有选中会话时预览直接报错, 不回退部署工作区根 —— 部署根是进程 cwd, 可能是一棵极大的树, 在那里同步展开会堵住 Host 事件循环. 这一页只列不改: 加临时可写根与撤回授权在会话区的 "写入权限" tab 上 (见下节).
+- 读拒绝路径: 语法与保护路径完全一致 (含 `!` 排除与 `//` 绝对条目), 但作用在读上; 留空即默认不禁止任何读取. 读拒绝允许用 `!` 在受保护区域之外单独放行某条路径, 但同样不能在仍受读拒绝的目录内部重新放行后代.
+- 三份文本都按当前会话的工作区根解析, 每个会话各自生效. 开关是全局的, 与工作区无关.
+- 预览按钮把当前草稿交给 Host 展开, 不必先保存: 列出生效的保护路径, 读拒绝路径与额外可写根, 工作区规则文件的条目, 本会话已批准的可写授权, 以及被忽略或拒绝的行. 展开使用当前选中会话的 cwd (即被主视图持有的那条会话记录); 没有选中会话时预览直接报错, 不回退部署工作区根 —— 部署根是进程 cwd, 可能是一棵极大的树, 在那里同步展开会堵住 Host 事件循环. 这一页只列不改: 加临时可写根与撤回授权在会话区的 "写入权限" tab 上 (见下节).
 
 `mode` 与 `workspaceRoot` 是官方 policy 行字段的复述 (patch 对整行配置做替换, 必须带上), 取值语义与 base bundle 一致.
 
@@ -149,9 +166,26 @@ secrets/
 - 只接受普通文件 (符号链接拒绝); `//` 绝对条目与越出工作区的 `..` 条目拒绝, 超限条目丢弃, 都只告警不生效.
 - **这份文件本身是唯一的硬保护**: 在 `read-only` 与 `workspace-write` 下任何授权都不放行它, 也没有 `request_writable_path` 可受理它, 会话面板的手动添加同样拒绝它; 要改只能换文件名或由你在 DSH 之外编辑. (整个 `danger-full-access` 模式下本插件不介入, 见 "边界与已知限制".)
 
+## 读拒绝路径
+
+读拒绝让模型与沙箱命令都拿不到某些位置的内容, 典型用途是把密钥, 凭据, 别的租户的数据挡在 agent 之外:
+
+```text
+# 插件页 "读拒绝路径"
+secret
+//etc/pki
+!secret/public.pem
+```
+
+- 判定与写保护同源: 同一套 gitignore 语义的模式表, 逐路径匹配 (含前缀围栏: 命中的目录连同其后代一起挡), 不依赖任何扫盘结果, `!` 按最后匹配生效.
+- 工具侧走引擎的 `tools/pre-execute` 钩子: `read` / `read_image` / `grep` / `glob` 的路径参数与 `str_replace_editor` 的 `view` 命令命中即被拒绝, 拒绝信息里写明命中的是哪条模式, 并提示可以申请本会话授权.
+- `grep` / `glob` 的结果还要再过滤一次: 它们默认搜索整个会话工作区, 请求的 scope 没命中并不等于结果里没有命中, 因此落在读拒绝范围内的命中会被逐条丢掉; 一次调用的命中若全部被丢掉, 这条结果会变成一条说明性的错误.
+- 命令侧: macOS 上追加 `(deny file-read* ...)` (字面条目走正则, 含通配的走枚举, 与写保护同一套两条通道); Linux bwrap 用 `tmpfs` 盖目录, `--ro-bind /dev/null` 盖文件. Windows 上只挡工具侧, 与写保护的限制一致.
+- 读拒绝比写保护更容易误伤 (提示词, 依赖, 构建脚本常常要读同一棵子树), 因此没有默认值, 需要时显式声明.
+
 ## 模型申请可写路径
 
-提示词会引导模型: 任务要反复写同一片受保护区域时 (一个目录里的多个文件, 构建产物树, 若干次写入都依赖的工作区外路径), 调 `request_writable_path` 申请本会话的可写授权, 参数是 `path` (字面路径, 支持 `~` / `$VAR` / `//` / 相对含 `..`) 与 `justification` (给你看的一句话理由); 单个文件照旧用 write / edit 工具, 那次被拒就算了.
+提示词会引导模型: 任务要反复写同一片受保护区域时 (一个目录里的多个文件, 构建产物树, 若干次写入都依赖的工作区外路径), 调 `request_writable_path` 申请本会话的可写授权, 参数是 `path` (字面路径, 支持 `~` / `$VAR` / `//` / 相对含 `..`) 与 `justification` (给你看的一句话理由); 单个文件照旧用 write / edit 工具, 那次被拒就算了. 需要读某个被读拒绝的位置时走同一个工具: 一条授权同时放开那条路径的读与写, 不额外引入第二个申请入口.
 
 审批理由会写明在放开什么: 工作区外的路径批准后成为本会话的额外可写根 (bash 与 write / edit 都能写), 工作区内被保护路径则放开那棵子树 —— write / edit 与命令沙箱 (macOS Seatbelt 的 allow, Linux bwrap 的 bind) 都认这份授权. 授权按路径生效且覆盖其下全部后代, 所以批过父目录之后再写子目录、子文件不会再次弹窗. 授权只在本会话内存里, 不写 settings, 条数上限 `maxGrants` (默认 8); 关掉 `allowWritableRequests` 后工具的任何调用都被拒, 提示词也不再引导. 保护路径与规则文件条目都在可申请范围内, 因此可以配成 "整个工作区只读 + 逐个目录批准".
 
@@ -179,16 +213,19 @@ secrets/
 | 入口 | 哪些系统 | 效果 |
 |---|---|---|
 | write / edit 工具 | 全平台 | 按保护模式逐路径判定, 命中即拒绝; `workspace-write` 下额外根放行; `danger-full-access` 下全部放行 |
-| bash 等命令 | Linux, macOS | 内核级只读 / 额外可写; macOS 上字面条目按正则拒绝, 与路径当前是否存在无关; Windows 做不到, 见下方限制 |
-| 提示词 | 全平台 | 先告诉模型哪些不能写, 哪些额外根可写, 需要反复写时怎么申请 |
-| 本会话授权 (`request_writable_path`) | 全平台 | 工作区外路径按额外根生效; 保护旁路对 write / edit 与命令沙箱 (bwrap / Seatbelt) 都生效 |
+| read / read_image / grep / glob / str_replace_editor(view) | 全平台 | 按读拒绝模式逐路径判定, 命中即拒绝; `grep` / `glob` 的结果再逐条过滤; 会话授权放行 |
+| bash 等命令 | Linux, macOS | 内核级只读 / 额外可写; 读拒绝用 `deny file-read*` (macOS) 或 `tmpfs` / `/dev/null` 覆盖 (bwrap); macOS 上字面条目按正则拒绝, 与路径当前是否存在无关; Windows 做不到, 见下方限制 |
+| 提示词 | 全平台 | 先告诉模型哪些不能写, 哪些不能读, 哪些额外根可写, 需要反复写或确实要读时怎么申请 |
+| 本会话授权 (`request_writable_path`) | 全平台 | 工作区外路径按额外根生效; 保护旁路与读放行对写入工具, 读工具与命令沙箱 (bwrap / Seatbelt) 都生效 |
 | 会话写入权限面板 | 全平台 | 列出并撤回本会话授权, 手动加临时可写根; 撤回后向会话投一条通知消息 |
 | macOS broker 加固 | macOS | 堵住 `open` 经 launchd 把命令挪到沙箱外执行 |
 | WSL 互操作加固 | WSL + bwrap | 堵住 Linux 侧 exec Windows PE 把命令挪到沙箱外执行 |
 
-两类入口的判定方式不同, 这是有意的: write / edit 拿得到目标路径, 因此直接按 gitignore 模式判定 —— 深层嵌套, 尚未存在的匹配一样挡得住, 每条写入只做几次正则; bash 的沙箱 (mount / profile) 只能吃具体路径, 所以那一侧才需要枚举展开. 枚举走 `fs.promises`, 每次 readdir / lstat 让出事件循环; 同步的 `resolve()` 只注入模式原文和缓存里已有的路径, 不在会话加载时扫盘. 提示词同样只陈述模式, 不枚举绝对路径.
+两类入口的判定方式不同, 这是有意的: write / edit 拿得到目标路径, 因此直接按 gitignore 模式判定 —— 深层嵌套, 尚未存在的匹配一样挡得住, 每条写入只做几次正则; bash 的沙箱 (mount / profile) 只能吃具体路径, 所以那一侧才需要枚举展开. 读拒绝沿用同一套判定: 读工具走引擎的 `tools/pre-execute` 钩子按模式逐路径判定 (那里拿得到会话, 因此能认会话授权), 命令侧则与其他写保护一样靠枚举与正则. 枚举走 `fs.promises`, 每次 readdir / lstat 让出事件循环; 同步的 `resolve()` 只注入模式原文和缓存里已有的路径, 不在会话加载时扫盘. 提示词同样只陈述模式, 不枚举绝对路径.
 
-macOS 上命令侧还有第二条通道: Seatbelt profile 支持按正则匹配路径, 因此**字面条目**会被直接翻译成 `(deny file-write* (regex ...))`, 不经过枚举 —— 展开当时还不存在的路径 (会话中途 `git init` 出来的 `.git`) 同样挡得住, 也不受展开缓存窗口影响. 含通配或转义的条目仍走枚举清单, 原因见下方限制.
+读拒绝没有放在 `ctx.fs` 那一层, 原因是读接口 (`readText` / `streamText` / `listDir` / `stat`) 的签名里既没有 policy 也没有会话, 在那一层判定既拿不到会话工作区根, 也认不了本会话授权; 而 `grep` / `glob` 的 ripgrep 是 `ctx.subprocess` 直接拉起的, 既不经过 `ctx.fs` 也不经过命令沙箱, 只有工具派发层挡得住.
+
+macOS 上命令侧还有第二条通道: Seatbelt profile 支持按正则匹配路径, 因此**字面条目**会被直接翻译成 `(deny file-write* (regex ...))`, 不经过枚举 —— 展开当时还不存在的路径 (会话中途 `git init` 出来的 `.git`) 同样挡得住, 也不受展开缓存窗口影响. 读拒绝同样有这条通道, 生成的是 `(deny file-read* (regex ...))`. 含通配或转义的条目仍走枚举清单, 原因见下方限制.
 
 ### 命令侧清单的保鲜
 
@@ -201,7 +238,7 @@ macOS 上命令侧还有第二条通道: Seatbelt profile 支持按正则匹配�
 
 这一步只影响命令侧. write / edit 围栏始终按模式原文判定, 与展开、监听、缓存都无关.
 
-主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式. WSL 互操作同样不区分模式: Windows 进程写的是真实磁盘, `read-only` 的 `--ro-bind / /` 一样挡不住.
+主场景是 `workspace-write`. `read-only` 下官方已挡住全部文件写入, 额外可写根不打穿; 但官方 profile 的 `(allow default)` 在两种模式下都一样, 所以 broker 加固不区分模式, 读拒绝在 `read-only` 下照常叠加 (那个模式限制的是写). `read-only` 下会话授权只以只读方式把路径重新露出来, 不会打穿只读. WSL 互操作同样不区分模式: Windows 进程写的是真实磁盘, `read-only` 的 `--ro-bind / /` 一样挡不住.
 
 ### macOS broker 逃逸加固
 
@@ -255,6 +292,11 @@ patch 配置和插件页文本走同一套解析.
 - **撤回通知依赖该会话有活着的 agent**: 投递对象是会话的 agent runtime; 该会话当前没有活动 agent 时授权照常撤回, 但通知投不出去, 面板会把这件事如实写出来 (不假装模型已经知道).
 - **授权在 bwrap 上要求路径真实存在**: 命令侧要把授权子树 bind 回可写, bwrap 要求挂载源存在; 还不存在的授权路径在命令侧要等它被创建出来 (write / edit 与 Seatbelt 不受这条限制).
 - **Landlock 上没有命令侧的授权**: 纯 allow-list 无法表达"父目录只读, 其中一棵子树可写", 强行加 `--rw` 会连上方一起放开, 因此这种 runner 下授权只作用于 write / edit (告警一次).
+- **Landlock 上也没有命令侧的读拒绝**: 同一个 allow-list 结构在放行的父目录里挖不掉一棵子树, 因此读拒绝在这个 runner 上只作用于读工具, 命令仍读得到, 会告警一次. 它同时挡住读拒绝的授权那一路 (读本来就没被挡).
+- **Windows 上读拒绝只挡工具侧**: 官方 Windows 沙箱只能把整个工作区设成可写或不可写, 没有子路径的读拒绝形态 (与写保护的限制同源).
+- **读拒绝的枚举窗口与写保护相同**: bwrap 的 `tmpfs` 与 Seatbelt 的通配条目都按枚举出来的路径生效, 新出现的匹配路径要等下一次展开 (watcher 立即重算, 没有事件时最迟 `watchTtlMaxMs`). macOS 上的**字面条目**同样走正则通道, 没有这个窗口.
+- **读拒绝拦不住别的东西读**: 它只管本插件覆盖的那几条通道 (读工具与 `bash` / `pwsh` 沙箱). 别的插件或工具自己开文件读 (MCP 工具, 浏览器, 远端会话一类) 不在这条围栏里.
+- **读拒绝挡住的是内容, 也顺带挡住执行**: macOS 上 `(deny file-read*)` 会连 `exec` 一起挡住 (执行也要求读), 这是收紧.
 - 指向保护目录内部的符号链接会被拒绝, 指向外部的不受影响.
 
 ## 本地开发
@@ -273,11 +315,12 @@ just verify     # 以上全流程 + 打包预览
 |---|---|---|
 | `src/gitignore.ts` | gitignore 语义的解析、编译与**逐路径匹配** (含 `PatternSet.match`), write / edit 围栏与可写申请的保护判定共用 | 纯字符串/正则, **零运行时依赖** |
 | `src/patterns.ts` | 把模式**异步枚举**成具体路径, 供命令沙箱与预览面板使用 (另有额外可写根的字面路径解析) | `node:fs/promises`、`canonicalPath` |
-| `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱 policy (含规则文件与授权)、进程沙箱 argv 叠加 | DSH 引擎 |
+| `src/fs.ts` / `src/policy.ts` / `src/provider.ts` | 三个挂载点: write/edit 围栏、沙箱 policy (含规则文件, 读拒绝与授权)、进程沙箱 argv 叠加 | DSH 引擎 |
+| `src/read-fence.ts` | 读拒绝的工具层围栏: 派发前按会话 policy 判定, 结果侧过滤 `grep` / `glob` 的命中 | DSH 引擎 |
 
 `src/readonly-file.ts` 读取并校验工作区只读规则文件, `src/request-writable-path.ts` 是 `request_writable_path` 工具与会话授权表 (含撤回), `src/path-expand.ts` 负责额外可写根的字面路径展开 (`~` / 环境变量 / 平台差异), `src/grants-route.ts` 是会话写入权限面板的 `/api` 路由, `src/grant-notice.ts` 负责撤回之后投给会话的那条通知, `src/seatbelt.ts` 与 `src/wsl.ts` 分别是 macOS broker 加固与 WSL 互操作加固的参数生成.
 
-测试覆盖: 纯匹配器语义 (锚定, `**`, 字符类, 取反, 前缀围栏, 目录标记, 大小写, 工作区外不match; 不需要任何临时目录), 路径解析语义 (相对锚定, 解开符号链接, 去重, 通配枚举与取反, 额外可写字面路径), 只读规则文件的解析与校验 (符号链接拒绝, 绝对与越界条目, 条目上限, 缓存与重读), 可写申请的判定矩阵 (直通, 规则文件硬保护, 工作区内旁路, 超限, 四种未获同意的结果) 与授权落到 policy 的通道, 会话面板路由的三个动作 (清单, 手动添加的内外分类与拒绝, 撤回与通知投递), 撤回通知消息的来源标记, 面板数据面的请求体与失败解读, write / edit 按模式判定 (启动后才出现的深层路径、尾部 `/` 与同名文件、工作区边界), bwrap / Seatbelt / Landlock 的命令行叠加 (含 WSL 加固的插入位置), write / edit 工具的拒绝与额外根放行矩阵, 配置通道的 base 与用户覆盖分层, client bundle 的 loader 注册, macOS 上真实 `sandbox-exec` 的内核级端到端 (包括 `open` broker 逃逸的对照组与加固后的拦截验证), 以及 Linux 上真实 `bwrap` 的内核级端到端 (保护路径写入 EROFS, 读取照常, 额外可写根可写; WSL 上再断言 Windows 盘与 interop 套接字被藏掉, 关掉开关后盘仍可见; 本机 bwrap 不可用时整组跳过).
+测试覆盖: 纯匹配器语义 (锚定, `**`, 字符类, 取反, 前缀围栏, 目录标记, 大小写, 工作区外不match; 不需要任何临时目录), 路径解析语义 (相对锚定, 解开符号链接, 去重, 通配枚举与取反, 额外可写字面路径), 只读规则文件的解析与校验 (符号链接拒绝, 绝对与越界条目, 条目上限, 缓存与重读), 可写申请的判定矩阵 (直通, 规则文件硬保护, 工作区内旁路, 超限, 四种未获同意的结果) 与授权落到 policy 的通道, 会话面板路由的三个动作 (清单, 手动添加的内外分类与拒绝, 撤回与通知投递), 撤回通知消息的来源标记, 面板数据面的请求体与失败解读, write / edit 按模式判定 (启动后才出现的深层路径、尾部 `/` 与同名文件、工作区边界), 读拒绝的判定与结果过滤 (路径参数的相对解析, 授权放行, `danger-full-access` 不介入, `str_replace_editor` 只挡 `view`, `grep` / `glob` 命中的逐条过滤与全挡时的错误反馈), 读拒绝文本与枚举清单落到 policy 的通道 (与写保护清单各自独立), bwrap / Seatbelt / Landlock 的命令行叠加 (含 WSL 加固的插入位置与读拒绝的挂载顺序), write / edit 工具的拒绝与额外根放行矩阵, 配置通道的 base 与用户覆盖分层, client bundle 的 loader 注册, macOS 上真实 `sandbox-exec` 的内核级端到端 (包括 `open` broker 逃逸的对照组与加固后的拦截验证), 以及 Linux 上真实 `bwrap` 的内核级端到端 (保护路径写入 EROFS, 读取照常, 额外可写根可写; WSL 上再断言 Windows 盘与 interop 套接字被藏掉, 关掉开关后盘仍可见; 本机 bwrap 不可用时整组跳过).
 
 ## License
 

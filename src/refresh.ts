@@ -19,17 +19,21 @@ import { existsSync, watch, type FSWatcher } from 'node:fs'
 export interface ExpansionSnapshot {
   readonly readOnly: readonly string[]
   readonly writable: readonly string[]
+  /** 读拒绝路径的枚举清单 (命令沙箱消费). */
+  readonly readDeny: readonly string[]
   readonly patterns: string
 }
 
-/** 一次展开的输入: 缓存键与两份文本. */
+/** 一次展开的输入: 缓存键与三份文本. */
 export interface ExpansionInputs {
-  /** 缓存键: 两份文本的合并结果, 任一变化都要重新展开. */
+  /** 缓存键: 三份文本的合并结果, 任一变化都要重新展开. */
   readonly key: string
   /** 生效的保护路径原文. */
   readonly readOnlyText: string
   /** 额外可写根文本. */
   readonly writableText: string
+  /** 生效的读拒绝路径原文. */
+  readonly readDenyText: string
 }
 
 export interface RefresherOptions {
@@ -70,7 +74,7 @@ interface Entry {
 function emptyEntry(): Entry {
   return {
     key: '',
-    snapshot: { readOnly: [], writable: [], patterns: '' },
+    snapshot: { readOnly: [], writable: [], readDeny: [], patterns: '' },
     at: 0,
     ttlMs: 0,
     dirty: true,

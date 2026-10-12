@@ -153,7 +153,7 @@ describe('handleRequest 的直通路径', () => {
     const target = join(workspace, 'secrets', 'token.txt')
     const result = await handleRequest(ctx, grants, host, target, '需要更新测试用密钥', exec())
     expect(result.kind).toBe('override')
-    expect(approval.requests[0]!.reason).toContain('overriding write protection')
+    expect(approval.requests[0]!.reason).toContain('overriding the write protection')
     const resolved = policy.resolve({ session: sessionStub() })
     expect(resolved.writableOverrides).toContain(target)
     // 旁路不进 writablePaths: 命令沙箱的 allow-list 不因它放宽.
@@ -316,7 +316,7 @@ describe('工作区根解析', () => {
     const result = await handleRequest(ctx, grants, host, join('.git', 'HEAD'), '相对路径申请', exec('call-relative'))
     expect(result.kind).toBe('override')
     expect(result.path).toBe(join(workspace, '.git', 'HEAD'))
-    expect(approval.requests[0]!.reason).toContain('overriding write protection')
+    expect(approval.requests[0]!.reason).toContain('overriding the write protection')
     expect(approval.requests[0]!.reason).toContain('.git')
     expect(approval.requests[0]!.reason).not.toContain('outside the session workspace')
     // 授权必须记在绝对路径上: 记成相对形态的话, 下一次展开会把它当工作区内条目丢掉,

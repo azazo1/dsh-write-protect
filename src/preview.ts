@@ -14,12 +14,13 @@ import { EMPTY_READ_ONLY_FILE, mergeReadOnlyText, type ReadOnlyFile } from './re
 import type { Grant } from './request-writable-path.ts'
 
 /**
- * 展开保护路径与额外可写根, 供设置页人工核对生效/未生效条目.
+ * 展开保护路径, 额外可写根与读拒绝路径, 供设置页人工核对生效/未生效条目.
  * @param patterns - gitignore 语义的保护路径文本 (设置页草稿).
  * @param writablePatterns - 字面路径的额外可写根文本 (设置页草稿).
  * @param workspaceRoot - 本次展开使用的工作区根.
  * @param file - 工作区只读规则文件的读取结果.
  * @param grants - 本会话已批准的可写授权.
+ * @param readDenyPatterns - gitignore 语义的读拒绝路径文本 (设置页草稿).
  */
 export async function previewPaths(
   patterns: string,
@@ -27,8 +28,10 @@ export async function previewPaths(
   workspaceRoot: string,
   file: ReadOnlyFile = EMPTY_READ_ONLY_FILE,
   grants: readonly Grant[] = [],
+  readDenyPatterns = '',
 ): Promise<PathPreview> {
   const readOnly = await expandReadOnlyPaths(mergeReadOnlyText(patterns, file.text), workspaceRoot)
+  const readDeny = await expandReadOnlyPaths(readDenyPatterns, workspaceRoot)
   const writable = expandWritablePaths(writablePatterns, workspaceRoot)
   const readOnlyFile: ReadOnlyFilePreview = {
     ...file.present ? { path: file.path } : {},
@@ -39,7 +42,8 @@ export async function previewPaths(
     workspaceRoot,
     readOnly: readOnly.paths,
     writable: writable.paths,
-    warnings: [...readOnly.warnings, ...writable.warnings],
+    readDeny: readDeny.paths,
+    warnings: [...readOnly.warnings, ...readDeny.warnings, ...writable.warnings],
     readOnlyFile,
     grants: grants.map(grant => ({ path: grant.path, kind: grant.kind })),
   }

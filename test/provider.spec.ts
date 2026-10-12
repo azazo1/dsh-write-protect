@@ -3,7 +3,7 @@
 // 全部走真实 confine() 路径. 官方 confine() 自 0.1.6 起是异步的,
 // 因此这里所有调用都 await (同步读 `.argv` 正是曾经的沙箱挂掉原因).
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -379,5 +379,108 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const baseline = await sandbox.confine(['true'], { ...ww(realWs, []), hardenWsl: false })
     const result = await sandbox.confine(['true'], ww(realWs, []))
     expect(result.argv).toEqual(baseline.argv)
+  })
+})
+
+describe('WriteProtectSandboxProvider 的读拒绝叠加', () => {
+  /** 读拒绝用例的真实现场: 一个目录 + 一个文件 (bwrap 只能挂载真实存在的路径). */
+  const denyDir = join(realWs, 'secret')
+  const denyFile = join(realWs, 'token.txt')
+  mkdirSync(denyDir, { recursive: true })
+  writeFileSync(denyFile, 'shh\n')
+
+  it('Seatbelt: 目录清单与字面条目的正则各走一条 file-read* 拒绝', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = await sandbox.confine(['true'], {
+      ...ww('/ws', ['/ws/protected']),
+      readDenyPaths: ['/ws/secret'],
+      readDenyPatterns: 'vault',
+    })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile).toContain('(deny file-read* (subpath "/ws/secret"))')
+    expect(profile).toContain('(deny file-read* (regex #"^/ws(/.*)?/vault(/.*)?$"))')
+    // 写保护的 deny 与读拒绝的 deny 是两类形式, 互不覆盖; broker 加固仍在最后.
+    expect(profile).toContain('(deny file-write* (subpath "/ws/protected"))')
+    expect(profile.endsWith(BROKER_TAIL)).toBe(true)
+  })
+
+  it('Seatbelt: 会话授权的读放行必须排在读拒绝之后', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = await sandbox.confine(['true'], {
+      ...ww('/ws', []),
+      readDenyPaths: ['/ws/secret'],
+      sessionGrantPaths: ['/ws/secret/inner'],
+    })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    expect(profile.lastIndexOf('(deny file-read* (subpath "/ws/secret"))'))
+      .toBeLessThan(profile.lastIndexOf('(allow file-read* (subpath "/ws/secret/inner"))'))
+  })
+
+  it('Seatbelt: 没有读拒绝可解时不追加无用的读放行', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const result = await sandbox.confine(['true'], { ...ww('/ws', []), writableOverrides: ['/ws/gitdir'] })
+    expect(result.argv[result.argv.indexOf('-p') + 1]).not.toContain('file-read*')
+  })
+
+  it('bwrap: 目录用 tmpfs 盖住, 文件用 /dev/null 盖住', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const result = await sandbox.confine(['true'], {
+      ...ww(realWs, []),
+      readDenyPaths: [denyDir, denyFile],
+    })
+    expect(indexOfSeq(result.argv, ['--tmpfs', denyDir])).toBeGreaterThan(-1)
+    expect(indexOfSeq(result.argv, ['--ro-bind', '/dev/null', denyFile])).toBeGreaterThan(-1)
+  })
+
+  it('bwrap: 读拒绝排在保护 ro-bind 之后, 会话授权再挂回其后', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const result = await sandbox.confine(['true'], {
+      ...ww(realWs, [denyDir]),
+      readDenyPaths: [denyDir],
+      sessionGrantPaths: [denyDir],
+    })
+    const roAt = indexOfSeq(result.argv, ['--ro-bind', denyDir, denyDir])
+    const tmpfsAt = indexOfSeq(result.argv, ['--tmpfs', denyDir])
+    const bindAt = indexOfSeq(result.argv, ['--bind', denyDir, denyDir])
+    expect(roAt).toBeGreaterThan(-1)
+    expect(tmpfsAt).toBeGreaterThan(roAt)
+    expect(bindAt).toBeGreaterThan(tmpfsAt)
+  })
+
+  it('read-only 模式同样叠加读拒绝, 且授权只以只读方式挂回', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const result = await sandbox.confine(['true'], {
+      mode: 'read-only',
+      workspaceRoot: realWs,
+      readDenyPaths: [denyDir],
+      sessionGrantPaths: [denyDir],
+      writableOverrides: [denyDir],
+    })
+    expect(indexOfSeq(result.argv, ['--tmpfs', denyDir])).toBeGreaterThan(-1)
+    expect(indexOfSeq(result.argv, ['--ro-bind', denyDir, denyDir])).toBeGreaterThan(-1)
+    expect(indexOfSeq(result.argv, ['--bind', denyDir, denyDir])).toBe(-1)
+  })
+
+  it('read-only 模式下没有读拒绝时, 授权不改 argv', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const baseline = await sandbox.confine(['true'], { mode: 'read-only', workspaceRoot: '/ws' })
+    const withGrant = await sandbox.confine(['true'], {
+      mode: 'read-only',
+      workspaceRoot: '/ws',
+      sessionGrantPaths: ['/ws/gitdir'],
+    })
+    expect(withGrant.argv).toEqual(baseline.argv)
+  })
+
+  it('Landlock: 读拒绝无法表达, argv 保持官方结果并告警一次', async () => {
+    const sandbox = await setup({}, LANDLOCK_INTERNALS)
+    const warnings: string[] = []
+    ;(sandbox as unknown as { ctx: { logger: { warn: (message: string) => void } } }).ctx.logger = {
+      warn: (message: string) => { warnings.push(message) },
+    }
+    const baseline = await sandbox.confine(['true'], ww(realWs, []))
+    const result = await sandbox.confine(['true'], { ...ww(realWs, []), readDenyPaths: [denyDir] })
+    expect(result.argv).toEqual(baseline.argv)
+    expect(warnings.filter(message => message.includes('read denial inside an allowed root'))).toHaveLength(1)
   })
 })

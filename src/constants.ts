@@ -13,6 +13,9 @@ export const PATTERNS_FIELD = 'patterns'
 /** settings namespace 的额外可写根字段名 (字面路径的多行文本). */
 export const WRITABLE_FIELD = 'writablePatterns'
 
+/** settings namespace 的读拒绝路径字段名 (gitignore 风格的多行文本). */
+export const READ_DENY_FIELD = 'readDenyPatterns'
+
 /** settings namespace 的 macOS broker 加固开关字段名. */
 export const HARDEN_BROKER_FIELD = 'hardenBroker'
 
@@ -69,6 +72,13 @@ export const DEFAULT_READ_ONLY_PATHS: readonly string[] = ['.git']
  * 字面路径并进 allow-list, 默认不放宽任何位置.
  */
 export const DEFAULT_WRITABLE_PATHS: readonly string[] = []
+
+/**
+ * 读拒绝路径的默认来源: 空列表, 即默认不禁止任何读取. 读拒绝比写保护更
+ * 容易把正常工作卡住 (提示词, 依赖, 构建脚本都可能要读同一棵子树), 因此
+ * 不给默认值; 需要时在部署配置或插件页显式声明.
+ */
+export const DEFAULT_READ_DENY_PATHS: readonly string[] = []
 
 /**
  * 工作区只读规则文件的默认文件名 (工作区根下的单份文件). 内容与设置页的
@@ -206,6 +216,8 @@ export interface PathPreview {
   workspaceRoot: string
   readOnly: readonly string[]
   writable: readonly string[]
+  /** 读拒绝路径的展开结果 (命令侧清单); 空数组表示没有读拒绝条目. */
+  readDeny: readonly string[]
   warnings: readonly string[]
   /** 工作区只读规则文件 (部署配置决定是否识别, 关闭时为关闭说明). */
   readOnlyFile?: ReadOnlyFilePreview
@@ -235,6 +247,24 @@ declare module '@deepseek-ai/dsh-sandbox' {
      */
     readOnlyPatterns?: string
     writablePaths?: readonly string[]
+    /**
+     * 生效的读拒绝路径配置**原文** (gitignore 语义, 与保护路径同一套解析).
+     * 只来自插件配置与部署 base: 工作区规则文件管的是写保护, 不参与读拒绝.
+     * 读拒绝围栏 (read 一类工具与命令沙箱) 按它逐路径判定. 缺省表示这份 policy
+     * 不是本插件的 policy service 生成的.
+     */
+    readDenyPatterns?: string
+    /**
+     * 读拒绝路径的枚举清单: 命令沙箱 (bwrap 的 tmpfs / Seatbelt 的 subpath)
+     * 需要具体路径, 因此这一份由异步展开产出; 工具侧围栏不用它, 直接按模式原文判定.
+     */
+    readDenyPaths?: readonly string[]
+    /**
+     * 本会话经审批得到的全部授权路径 (工作区内的保护旁路 + 工作区外的额外可写根).
+     * 它既让命令侧把被授权的子树重新挂回可写, 也是读拒绝的放行依据 —— 用户批准
+     * 一条路径之后, 那条路径连同其后代既可以写也可以读.
+     */
+    sessionGrantPaths?: readonly string[]
     /**
      * 本会话经审批得到的保护旁路路径: 落在这些根之下的目标跳过保护路径判定.
      * 只由 write / edit 围栏消费; 命令侧的沙箱挂载 / profile 在命令执行前

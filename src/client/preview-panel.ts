@@ -70,6 +70,8 @@ export function WriteProtectPreviewPanel(
     ),
     createElement('p', { className: 'dsh-wp-preview-label' }, `保护路径 (${String(preview.readOnly.length)})`),
     pathList(React, preview.readOnly, '无生效保护路径'),
+    createElement('p', { className: 'dsh-wp-preview-label' }, `读拒绝路径 (${String(preview.readDeny.length)})`),
+    pathList(React, preview.readDeny, '无读拒绝路径: 任何位置都可以读'),
     createElement(
       'p',
       { className: 'dsh-wp-preview-label' },

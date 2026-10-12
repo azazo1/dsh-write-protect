@@ -16,7 +16,7 @@ function recursiveWatchUsable(root: string): boolean {
   }
 }
 
-const inputs: ExpansionInputs = { key: 'git', readOnlyText: '.git', writableText: '' }
+const inputs: ExpansionInputs = { key: 'git', readOnlyText: '.git', writableText: '', readDenyText: '' }
 
 let workspace: string
 
@@ -42,6 +42,7 @@ function recorder(options: { watchingEnabled?: boolean, floorMs?: number, ceilin
       return {
         readOnly: state.protectedNow ? [join(workspace, '.git')] : [],
         writable: [],
+        readDeny: [],
         patterns: received.readOnlyText,
       }
     },

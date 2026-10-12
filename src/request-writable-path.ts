@@ -230,20 +230,21 @@ function renderResult(result: RequestResult): string {
 export function registerRequestWritablePath(ctx: Context, grants: GrantsService, host: GrantPolicyHost): void {
   ctx.tools.register(defineTool({
     name: REQUEST_WRITABLE_PATH_TOOL,
-    description: 'Ask the user to grant write access to one path for this session, for work that will keep writing the same protected path '
-      + 'or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on). '
+    description: 'Ask the user to grant access to one path for this session, for work that will keep writing the same protected path '
+      + 'or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on), '
+      + 'or that genuinely needs to read a read-denied path. '
       + 'A single file is written with the ordinary write/edit tools. The user decides in an approval prompt, and a granted path stays '
-      + 'writable only until the session ends.',
+      + 'writable and readable only until the session ends.',
     parameters: {
       path: {
         type: 'string',
         required: true,
-        description: 'The path that needs write access: absolute, //-prefixed, ~/..., or relative to the session workspace (.. allowed). No globs.',
+        description: 'The path that needs access: absolute, //-prefixed, ~/..., or relative to the session workspace (.. allowed). No globs.',
       },
       justification: {
         type: 'string',
         required: true,
-        description: 'One sentence for the user explaining why this exact path needs write access.',
+        description: 'One sentence for the user explaining why this exact path needs access.',
       },
     },
     output: {
@@ -411,8 +412,8 @@ async function askApproval(
     throw new Error(`write access to "${target}" requires user approval, but approval prompts are disabled in this session`)
   }
   const seeking = kind === 'override'
-    ? `grant write access to "${target}" for this session, overriding write protection on "${matchedPattern ?? ''}"`
-    : `grant write access to "${target}" (outside the session workspace) for this session`
+    ? `grant access to "${target}" for this session, overriding the write protection (and any read denial) covering "${matchedPattern ?? ''}"`
+    : `grant read and write access to "${target}" (outside the session workspace) for this session`
   const outcome = await approval.request({
     agent,
     toolName: REQUEST_WRITABLE_PATH_TOOL,
@@ -428,10 +429,12 @@ async function askApproval(
   const notes = kind === 'override'
     ? [
       `write protection on "${matchedPattern ?? ''}" is bypassed for the write/edit tools and for sandboxed commands under "${target}".`,
+      `reading "${target}" is allowed too, including when a read-denial pattern covers it.`,
       'the grant already covers every path beneath it, so do not ask again for a subdirectory or another file in there while it lasts.',
     ]
     : [
       `"${target}" joined the writable roots for this session, so sandboxed commands and the write/edit tools may write there.`,
+      `"${target}" is readable too, including when a read-denial pattern covers it.`,
       'the grant already covers every path beneath it, so do not ask again for a subdirectory or another file in there while it lasts.',
       'write-protect patterns still win inside it.',
     ]

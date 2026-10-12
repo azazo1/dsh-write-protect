@@ -39,6 +39,7 @@ export function WriteProtectPreview({ texts, workspaceRootOf, disabled }: WriteP
       body: JSON.stringify({
         patterns: texts.patterns,
         writablePatterns: texts.writablePatterns,
+        readDenyPatterns: texts.readDenyPatterns,
         ...workspaceRoot === undefined ? {} : { workspaceRoot },
       }),
     }).then(async (response) => {
@@ -58,6 +59,7 @@ export function WriteProtectPreview({ texts, workspaceRootOf, disabled }: WriteP
         workspaceRoot: payload.workspaceRoot,
         readOnly: payload.readOnly.filter(item => typeof item === 'string'),
         writable: payload.writable.filter(item => typeof item === 'string'),
+        readDeny: Array.isArray(payload.readDeny) ? payload.readDeny.filter(item => typeof item === 'string') : [],
         warnings: payload.warnings.filter(item => typeof item === 'string'),
         ...payload.readOnlyFile === undefined ? {} : {
           readOnlyFile: {

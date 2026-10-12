@@ -48,6 +48,12 @@ function regexForEntry(entry: PatternEntry, workspaceRoot: string): string {
 }
 
 /**
+ * Seatbelt 的一条拒绝形式作用于哪一类文件操作. `file-write*` 是写保护,
+ * `file-read*` 是读拒绝.
+ */
+export type SeatbeltOperation = 'file-write*' | 'file-read*'
+
+/**
  * 按保护路径**原文**生成 Seatbelt 正则拒绝形式.
  *
  * 枚举清单只能覆盖展开当时已经存在的路径, 因此像 `.git` 这种"会话中途才出现"
@@ -57,11 +63,16 @@ function regexForEntry(entry: PatternEntry, workspaceRoot: string): string {
  * 只处理字面条目: 含通配或转义的条目仍交给枚举清单. 只要文本里出现 `!` 取反就
  * 整体放弃 —— 纯 deny 表达不了 gitignore 的 last-match-wins, 交给枚举兜底.
  * 目录标记 (`build/`) 在这里不额外区分: 同名文件也会一并挡住, 属于收紧.
- * @param text - 生效的保护路径原文 (设置页文本与工作区规则文件合并后的结果).
+ * @param text - 生效的配置原文 (写保护文本; 读拒绝走同一套语义).
  * @param workspaceRoot - 工作区根, 锚定条目与任意层级条目都以它为界.
- * @returns SBPL `(deny file-write* (regex ...))` 形式; 无法表达时为空数组.
+ * @param operation - 拒绝哪一类操作, 缺省 `file-write*`.
+ * @returns SBPL `(deny <operation> (regex ...))` 形式; 无法表达时为空数组.
  */
-export function seatbeltRegexDenials(text: string, workspaceRoot: string): string[] {
+export function seatbeltRegexDenials(
+  text: string,
+  workspaceRoot: string,
+  operation: SeatbeltOperation = 'file-write*',
+): string[] {
   if (text.trim().length === 0) return []
   const entries = parsePatternLines(text)
   if (entries.some(entry => entry.negated)) return []
@@ -72,9 +83,30 @@ export function seatbeltRegexDenials(text: string, workspaceRoot: string): strin
     const pattern = regexForEntry(entry, workspaceRoot)
     if (seen.has(pattern)) continue
     seen.add(pattern)
-    forms.push(`(deny file-write* (regex #"${pattern.replaceAll('"', String.raw`\"`)}"))`)
+    forms.push(`(deny ${operation} (regex #"${pattern.replaceAll('"', String.raw`\"`)}"))`)
   }
   return forms
+}
+
+/**
+ * 把一组路径引用成 SBPL `(allow <operation> (subpath ...))` 形式 (一条形式覆盖
+ * 全部路径, 与官方 profiles 的写法一致).
+ * @param paths - 要放行的路径.
+ * @param operation - 放行哪一类操作.
+ * @returns 单条 SBPL 形式.
+ */
+export function seatbeltSubpathAllow(paths: readonly string[], operation: SeatbeltOperation): string {
+  return `(allow ${operation} ${paths.map(path => `(subpath ${sbplString(path)})`).join(' ')})`
+}
+
+/**
+ * 把一组路径引用成 SBPL `(deny <operation> (subpath ...))` 形式.
+ * @param paths - 要拒绝的路径.
+ * @param operation - 拒绝哪一类操作.
+ * @returns 单条 SBPL 形式.
+ */
+export function seatbeltSubpathDeny(paths: readonly string[], operation: SeatbeltOperation): string {
+  return `(deny ${operation} ${paths.map(path => `(subpath ${sbplString(path)})`).join(' ')})`
 }
 
 /**

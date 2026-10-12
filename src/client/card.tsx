@@ -9,7 +9,7 @@ import { SettingsForm, SettingsValueField } from '@deepseek-ai/dsh-client-ui-pri
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   ALLOW_REQUESTS_FIELD, HARDEN_BROKER_FIELD, HARDEN_WSL_FIELD, MAX_GRANTS_FIELD,
-  MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, READONLY_FILE_FIELD, WATCH_FIELD,
+  MAX_READONLY_ENTRIES_FIELD, PATTERNS_FIELD, READONLY_FILE_FIELD, READ_DENY_FIELD, WATCH_FIELD,
   WATCH_TTL_MAX_FIELD, WATCH_TTL_MIN_FIELD, WRITABLE_FIELD,
 } from '../constants.ts'
 import { SwitchField, TextAreaField } from './fields.tsx'
@@ -42,7 +42,7 @@ const FORM_LABELS = {
 export function WriteProtectSettingsCard(props: WriteProtectSettingsCardProps) {
   const state = props.useWriteProtectCard(snapshot => snapshot)
   if (props.view === 'summary') {
-    return '保护工作区里不该被写入的路径: 保护路径, 可写根, 只读规则文件与会话授权.'
+    return '保护工作区里不该被写入的路径, 挡掉不该被读到的路径: 保护路径, 读拒绝路径, 可写根, 只读规则文件与会话授权.'
   }
   const disabled = !state.writable
 
@@ -115,6 +115,19 @@ export function WriteProtectSettingsCard(props: WriteProtectSettingsCardProps) {
         onEdit={(text) => { props.edit(WRITABLE_FIELD, text) }}
         onReset={() => { props.resetField(WRITABLE_FIELD) }}
       />
+      <TextAreaField
+        id="plugin-config-write-protect-read-deny"
+        label="读拒绝路径"
+        hint="每行一条, 语法与保护路径相同; 命中的路径 read / grep / glob 等工具与沙箱命令都读不到, 需要读时由模型申请本会话授权. 留空表示不禁止任何读取."
+        rows={5}
+        text={state.readDenyPatterns.text}
+        invalid={state.readDenyPatterns.invalid}
+        invalidLabel="这一项不是合法的文本."
+        overridden={state.readDenyPatterns.overridden}
+        disabled={disabled}
+        onEdit={(text) => { props.edit(READ_DENY_FIELD, text) }}
+        onReset={() => { props.resetField(READ_DENY_FIELD) }}
+      />
       <SettingsValueField
         id="plugin-config-write-protect-rules-file"
         label="工作区只读规则文件名"
@@ -184,7 +197,11 @@ export function WriteProtectSettingsCard(props: WriteProtectSettingsCardProps) {
         state.watchTtlMaxMs,
       )}
       <WriteProtectPreview
-        texts={{ patterns: state.patterns.text, writablePatterns: state.writablePatterns.text }}
+        texts={{
+          patterns: state.patterns.text,
+          writablePatterns: state.writablePatterns.text,
+          readDenyPatterns: state.readDenyPatterns.text,
+        }}
         workspaceRootOf={props.workspaceRootOf}
         disabled={disabled}
       />
