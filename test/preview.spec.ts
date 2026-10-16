@@ -34,4 +34,19 @@ describe('previewPaths', () => {
     expect(preview.writable).toEqual([extra])
     expect(preview.warnings).toEqual([])
   })
+
+  it('保护路径与读拒绝草稿都按配置语义展开, 丢弃的行记进告警', async () => {
+    process.env.DSH_WP_TEST_PREVIEW = extra
+    try {
+      const preview = await previewPaths('$DSH_WP_TEST_PREVIEW', '', ws, undefined, [], '$DSH_WP_TEST_PREVIEW\n$DSH_WP_TEST_UNSET')
+      // 环境变量展开出的绝对路径同样进枚举清单 (这里两个根同一个目录, 去重后一条).
+      expect(preview.readOnly).toEqual([extra])
+      expect(preview.readDeny).toEqual([extra])
+      expect(preview.warnings).toEqual([
+        'pattern line "$DSH_WP_TEST_UNSET" references unset or empty environment variable "DSH_WP_TEST_UNSET"; the line is dropped',
+      ])
+    } finally {
+      delete process.env.DSH_WP_TEST_PREVIEW
+    }
+  })
 })

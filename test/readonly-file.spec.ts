@@ -66,6 +66,16 @@ describe('readReadOnlyFile', () => {
     expect(file.warnings.some(warning => warning.includes('escapes the workspace'))).toBe(true)
   })
 
+  it('规则文件里的 ~ 与 $VAR 不展开, 只提示一句', () => {
+    // 这份文件是工作区自带的, 只认工作区内的相对条目.
+    writeRules('~/.ssh\n$HOME/.aws')
+    const file = readReadOnlyFile(workspace, '.readonly', 200)
+    expect(file.entries).toEqual(['/~/.ssh', '/$HOME/.aws'])
+    expect(file.warnings).toEqual([
+      `read-only rules file "${join(workspace, '.readonly')}": this file is workspace-scoped and does not expand "~" or "$VAR"; write such entries in the plugin configuration instead`,
+    ])
+  })
+
   it('通配条目不会被误判为越界', () => {
     writeRules('**/cache/\nsecrets/*.pem')
     const file = readReadOnlyFile(workspace, '.readonly', 200)

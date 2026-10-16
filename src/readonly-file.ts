@@ -126,7 +126,12 @@ function parseReadOnlyFile(
 ): ReadOnlyFile {
   const entries: string[] = []
   let truncated = 0
+  let warnedAboutExpansion = false
   for (const parsed of parsePatternLines(content)) {
+    if (!warnedAboutExpansion && looksLikeUnexpandedConfig(parsed.source)) {
+      warnedAboutExpansion = true
+      warnings.push(`read-only rules file "${target}": this file is workspace-scoped and does not expand "~" or "$VAR"; write such entries in the plugin configuration instead`)
+    }
     if (parsed.fsAbsolute) {
       warnings.push(`read-only rules file "${target}": ${JSON.stringify(parsed.source)} is a filesystem-absolute entry; only workspace-relative entries are accepted`)
       continue
@@ -145,6 +150,15 @@ function parseReadOnlyFile(
     warnings.push(`read-only rules file "${target}": ${String(truncated)} entries beyond the limit of ${String(maxEntries)} were ignored`)
   }
   return { present: true, path: target, text: entries.join('\n'), entries, warnings }
+}
+
+/**
+ * 条目是否用了"只在该文件之外展开"的写法: 行首 `~` 或未被转义的 `$`.
+ * 规则文件是工作区自带的, 只认工作区内的相对条目, 这里只提示一句, 不改变判定.
+ */
+function looksLikeUnexpandedConfig(source: string): boolean {
+  if (source === '~' || source.startsWith('~/')) return true
+  return /(^|[^\\])\$/u.test(source)
 }
 
 /**

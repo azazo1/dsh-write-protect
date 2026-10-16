@@ -57,6 +57,7 @@ import { agentsPortOf, notifyGrantRevoked, type WriteProtectAgents } from './gra
 import { mountGrantsRoute, type GrantsPolicyHost } from './grants-route.ts'
 import { expandReadOnlyPaths, expandWritablePaths } from './patterns.ts'
 import { mountPreviewRoute } from './preview-route.ts'
+import { expandPatternText } from './path-expand.ts'
 import { EMPTY_READ_ONLY_FILE, ReadOnlyFileCache, mergeReadOnlyText, type ReadOnlyFile } from './readonly-file.ts'
 import { ExpansionRefresher, type ExpansionInputs, type ExpansionSnapshot } from './refresh.ts'
 import { GrantsService, registerRequestWritablePath, type GrantPolicyHost } from './request-writable-path.ts'
@@ -241,6 +242,8 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
   /** 展开结果的保鲜: watcher + 自适应 TTL, 见 refresh.ts. */
   private readonly refresher: ExpansionRefresher
   private readonly warned = new Set<string>()
+  /** 模式文本 -> 展开后的文本 (`~` 与环境变量), 见 `expandPatterns`. */
+  private readonly expandedPatterns = new Map<string, string>()
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, config)
@@ -396,9 +399,16 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return currentConfigValue(this.config.writablePaths, [...DEFAULT_WRITABLE_PATHS]).join('\n')
   }
 
-  /** 当前生效的保护路径文本: 用户在设置页保存过的 patterns 覆盖部署 base. */
+  /**
+   * 当前生效的保护路径文本: 用户在设置页保存过的 patterns 覆盖部署 base, 再展开
+   * 行首 `~` 与环境变量 (与额外可写根同一套规则). 展开在这里做, 下游 (write/edit
+   * 围栏, 读拒绝围栏, 命令侧枚举与正则) 拿到的都是可以直接判定的形态.
+   *
+   * 工作区只读规则文件不参与这套展开: 它是工作区自带的一份文件, 只认工作区内的
+   * 相对条目 (见 `readonly-file.ts` 的校验).
+   */
   private currentText(): string {
-    return currentConfigValue(this.config.patterns, this.baseText())
+    return this.expandPatterns('readOnlyPaths', currentConfigValue(this.config.patterns, this.baseText()))
   }
 
   /** 当前生效的额外可写文本: 用户保存过的 writablePatterns 覆盖部署 base. */
@@ -411,9 +421,23 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
     return currentConfigValue(this.config.readDenyPaths, [...DEFAULT_READ_DENY_PATHS]).join('\n')
   }
 
-  /** 当前生效的读拒绝文本: 用户保存过的 readDenyPatterns 覆盖部署 base. */
+  /** 当前生效的读拒绝文本: 用户保存过的 readDenyPatterns 覆盖部署 base, 同样展开. */
   private currentReadDenyText(): string {
-    return currentConfigValue(this.config.readDenyPatterns, this.readDenyBaseText())
+    return this.expandPatterns('readDenyPaths', currentConfigValue(this.config.readDenyPatterns, this.readDenyBaseText()))
+  }
+
+  /**
+   * 展开一份模式文本, 丢弃的行只告警一次. 结果按原文缓存: `resolve()` 是每次工具
+   * 调用都要走的同步路径, 不该每次都重扫一遍配置文本.
+   */
+  private expandPatterns(field: string, text: string): string {
+    const cached = this.expandedPatterns.get(text)
+    if (cached !== undefined) return cached
+    const expanded = expandPatternText(text)
+    for (const warning of expanded.warnings) this.warn(`${field} ${warning}`)
+    if (this.expandedPatterns.size > 16) this.expandedPatterns.clear()
+    this.expandedPatterns.set(text, expanded.text)
+    return expanded.text
   }
 
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */

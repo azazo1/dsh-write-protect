@@ -3,6 +3,7 @@
 // 契约做 base -> 用户 section 的分层, 并用注册时的 schema 校验解析结果.
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
@@ -265,6 +266,34 @@ describe('WriteProtectPolicyService 的 settings 通道', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true })
     }
+  })
+})
+
+describe('WriteProtectPolicyService 的模式展开', () => {
+  /** 家目录在模式里的形态: `//` 前缀自己承担开头的分隔符. */
+  const homePattern = homedir().replace(/^\//u, '')
+
+  it('保护路径与读拒绝路径都展开行首 ~ 为 // 绝对条目', async () => {
+    const { policy } = await setup({ readOnlyPaths: ['~/.ssh'], readDenyPaths: ['~/.ssh'] })
+    const resolved = policy.resolve({})
+    expect(resolved.readOnlyPatterns).toBe(`//${homePattern}/.ssh`)
+    expect(resolved.readDenyPatterns).toBe(`//${homePattern}/.ssh`)
+  })
+
+  it('环境变量展开进文本, 未设置的整行丢弃', async () => {
+    process.env.DSH_WP_TEST_POLICY = '/tmp/dsh-wp-policy-probe'
+    try {
+      const { policy } = await setup({ readOnlyPaths: ['$DSH_WP_TEST_POLICY/**', '$DSH_WP_TEST_MISSING'] })
+      expect(policy.resolve({}).readOnlyPatterns).toBe('//tmp/dsh-wp-policy-probe/**')
+    } finally {
+      delete process.env.DSH_WP_TEST_POLICY
+    }
+  })
+
+  it('设置页保存的文本同样展开', async () => {
+    const { policy, settings } = await setup()
+    settings.save({ [PATTERNS_FIELD]: '~/.aws/**' })
+    expect(policy.resolve({}).readOnlyPatterns).toBe(`//${homePattern}/.aws/**`)
   })
 })
 

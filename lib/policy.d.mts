@@ -394,19 +394,33 @@ export declare class WriteProtectPolicyService extends SandboxPolicyService {
   /** 展开结果的保鲜: watcher + 自适应 TTL, 见 refresh.ts. */
   private readonly refresher;
   private readonly warned;
+  /** 模式文本 -> 展开后的文本 (`~` 与环境变量), 见 `expandPatterns`. */
+  private readonly expandedPatterns;
   constructor(ctx: Context, config: Config);
   /** 部署 base 的保护路径文本形态 (patch 数组逐行合并). */
   private baseText;
   /** 部署 base 的额外可写根文本形态 (patch 数组逐行合并). */
   private writableBaseText;
-  /** 当前生效的保护路径文本: 用户在设置页保存过的 patterns 覆盖部署 base. */
+  /**
+   * 当前生效的保护路径文本: 用户在设置页保存过的 patterns 覆盖部署 base, 再展开
+   * 行首 `~` 与环境变量 (与额外可写根同一套规则). 展开在这里做, 下游 (write/edit
+   * 围栏, 读拒绝围栏, 命令侧枚举与正则) 拿到的都是可以直接判定的形态.
+   *
+   * 工作区只读规则文件不参与这套展开: 它是工作区自带的一份文件, 只认工作区内的
+   * 相对条目 (见 `readonly-file.ts` 的校验).
+   */
   private currentText;
   /** 当前生效的额外可写文本: 用户保存过的 writablePatterns 覆盖部署 base. */
   private currentWritableText;
   /** 部署 base 的读拒绝路径文本形态 (patch 数组逐行合并). */
   private readDenyBaseText;
-  /** 当前生效的读拒绝文本: 用户保存过的 readDenyPatterns 覆盖部署 base. */
+  /** 当前生效的读拒绝文本: 用户保存过的 readDenyPatterns 覆盖部署 base, 同样展开. */
   private currentReadDenyText;
+  /**
+   * 展开一份模式文本, 丢弃的行只告警一次. 结果按原文缓存: `resolve()` 是每次工具
+   * 调用都要走的同步路径, 不该每次都重扫一遍配置文本.
+   */
+  private expandPatterns;
   /** 当前生效的 broker 加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
   private currentHardenBroker;
   /** 当前生效的 WSL 互操作加固开关: 用户拨动过设置页开关则以其为准, 否则走部署 base. */
