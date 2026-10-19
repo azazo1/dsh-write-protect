@@ -193,7 +193,7 @@ secret
 
 提示词会引导模型: 任务要反复写同一片受保护区域时 (一个目录里的多个文件, 构建产物树, 若干次写入都依赖的工作区外路径), 调 `request_writable_path` 申请本会话的可写授权, 参数是 `path` (字面路径, 支持 `~` / `$VAR` / `//` / 相对含 `..`) 与 `justification` (给你看的一句话理由); 单个文件照旧用 write / edit 工具, 那次被拒就算了. 需要读某个被读拒绝的位置时走同一个工具: 一条授权同时放开那条路径的读与写, 不额外引入第二个申请入口.
 
-审批理由会写明在放开什么: 工作区外的路径批准后成为本会话的额外可写根 (bash 与 write / edit 都能写), 工作区内被保护路径则放开那棵子树 —— write / edit 与命令沙箱 (macOS Seatbelt 的 allow, Linux bwrap 的 bind) 都认这份授权. 授权按路径生效且覆盖其下全部后代, 所以批过父目录之后再写子目录、子文件不会再次弹窗. 授权只在本会话内存里, 不写 settings, 条数上限 `maxGrants` (默认 8); 关掉 `allowWritableRequests` 后工具的任何调用都被拒, 提示词也不再引导. 保护路径与规则文件条目都在可申请范围内, 因此可以配成 "整个工作区只读 + 逐个目录批准".
+审批理由会写明在放开什么: 工作区外的路径批准后成为本会话的额外可写根 (bash 与 write / edit 都能写; Windows 上只到 write / edit), 工作区内被保护路径则放开那棵子树 —— write / edit 与命令沙箱 (macOS Seatbelt 的 allow, Linux bwrap 的 bind) 都认这份授权. 授权按路径生效且覆盖其下全部后代, 所以批过父目录之后再写子目录、子文件不会再次弹窗. 授权只在本会话内存里, 不写 settings, 条数上限 `maxGrants` (默认 8); 关掉 `allowWritableRequests` 后工具的任何调用都被拒, 提示词也不再引导. 保护路径与规则文件条目都在可申请范围内, 因此可以配成 "整个工作区只读 + 逐个目录批准".
 
 批准过的授权可以在会话区撤回, 撤回之后模型会收到一条通知 (见下节).
 
@@ -221,7 +221,7 @@ secret
 | write / edit 工具 | 全平台 | 按保护模式逐路径判定, 命中即拒绝; `workspace-write` 下额外根放行; `danger-full-access` 下全部放行 |
 | read / read_image / grep / glob / str_replace_editor(view) | 全平台 | 按读拒绝模式逐路径判定, 命中即拒绝; `grep` / `glob` 的结果再逐条过滤; 会话授权放行 |
 | bash 等命令 | Linux, macOS | 内核级只读 / 额外可写; 读拒绝用 `deny file-read*` (macOS) 或 `tmpfs` / `/dev/null` 覆盖 (bwrap); macOS 上字面条目按正则拒绝, 与路径当前是否存在无关; Windows 做不到, 见下方限制 |
-| 提示词 | 全平台 | 先告诉模型哪些不能写, 哪些不能读, 哪些额外根可写, 需要反复写或确实要读时怎么申请 |
+| 提示词 | 全平台 | 先告诉模型哪些不能写, 哪些不能读, 哪些额外根可写, 需要反复写或确实要读时怎么申请; Windows 上另有一段说明命令侧不受这些条目约束 |
 | 本会话授权 (`request_writable_path`) | 全平台 | 工作区外路径按额外根生效; 保护旁路与读放行对写入工具, 读工具与命令沙箱 (bwrap / Seatbelt) 都生效 |
 | 会话写入权限面板 | 全平台 | 列出并撤回本会话授权, 手动加临时可写根; 撤回后向会话投一条通知消息 |
 | macOS broker 加固 | macOS | 堵住 `open` 经 launchd 把命令挪到沙箱外执行 |
@@ -283,7 +283,7 @@ patch 配置和插件页文本走同一套解析.
 
 ### 边界与已知限制
 
-- **Windows 上 bash 挡不住, 也放不宽**: write / edit 能挡保护路径、能放行额外根; bash / pwsh 两者都不行. Windows 沙箱只能把整个工作区设成可写或不可写.
+- **Windows 上 bash 挡不住, 也放不宽**: write / edit 能挡保护路径、能放行额外根; bash / pwsh 两者都不行. Windows 沙箱只能把整个工作区设成可写或不可写. 这条差别同时写进模型可见的系统提示词与 `request_writable_path` 的工具描述 (只在 Windows 宿主上追加), 免得模型把"命令跑通了"当成"模式没命中".
 - **broker 加固只在 macOS 生效; WSL 互操作加固只在 WSL + bwrap 生效**: 官方 macOS profile 的 `(allow default)` 让 `open` 能把命令交给 launchd 在沙箱外跑, 本插件追加的拒绝形式堵住这条路. WSL 上对应的代理通道是 PE 互操作, 由 `hardenWsl` 堵住. 两边都只收紧不放宽. Linux 的网络命名空间仍未隔离, 沙箱内仍可连宿主守护进程 (Docker socket, ssh-agent 一类) 让外面代劳, 这类问题本插件不处理.
 - **工作区或额外可写根是整块 Windows 盘时**: tmpfs `/mnt` 之后会把那条路径重新 bind 回去, PE 文件重新可见, 但仍没有 `/run/WSL` 套接字. 真正要在沙箱内用 Windows 程序, 请关掉 `hardenWsl`.
 - **`hardenWsl` 会连带藏掉 `/mnt/wsl`**: WSLg 与 Docker Desktop 的跨发行版挂载都在那里, 沙箱内会看不见.

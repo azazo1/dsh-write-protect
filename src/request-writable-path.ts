@@ -28,6 +28,7 @@ import { canonicalPath, writableRoots } from '@deepseek-ai/dsh-sandbox'
 import { isPathUnder } from './containment.ts'
 import { REQUEST_WRITABLE_PATH_TOOL, type GrantKind } from './constants.ts'
 import { resolveLiteralPath } from './patterns.ts'
+import { requestWritableDescription } from './prompt.ts'
 
 /** 一条已批准的可写授权. */
 export interface Grant {
@@ -230,11 +231,7 @@ function renderResult(result: RequestResult): string {
 export function registerRequestWritablePath(ctx: Context, grants: GrantsService, host: GrantPolicyHost): void {
   ctx.tools.register(defineTool({
     name: REQUEST_WRITABLE_PATH_TOOL,
-    description: 'Ask the user to grant access to one path for this session, for work that will keep writing the same protected path '
-      + 'or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on), '
-      + 'or that genuinely needs to read a read-denied path. '
-      + 'A single file is written with the ordinary write/edit tools. The user decides in an approval prompt, and a granted path stays '
-      + 'writable and readable only until the session ends.',
+    description: requestWritableDescription(),
     parameters: {
       path: {
         type: 'string',

@@ -47,9 +47,9 @@ import {
   DEFAULT_WATCH_TTL_MIN_MS,
   DEFAULT_WRITABLE_PATHS,
   PROMPT_CONTEXT_ORDER,
-  REQUEST_WRITABLE_PATH_TOOL,
   isValidReadonlyFileName,
 } from './constants.ts'
+import { writeProtectPromptLines } from './prompt.ts'
 import { isWslHost } from './wsl.ts'
 import { compileGitignore } from './gitignore.ts'
 import type { FetchRouteConnection } from './connection.ts'
@@ -307,38 +307,18 @@ export class WriteProtectPolicyService extends SandboxPolicyService {
           // 会话没有 cwd 时官方 root 是部署根: 那份规则文件不属于任何会话, 不读它.
           const root = session.header?.cwd === undefined ? undefined : policy.workspaceRoot
           const patterns = (root === undefined ? this.currentText() : this.readOnlyTextAt(root)).trim()
-          const parts: string[] = []
-          if (patterns.length > 0) {
-            parts.push(`Write-protected patterns (gitignore semantics; in read-only and workspace-write mode every DSH-enforced operation denies writes beneath matching paths, reads stay allowed; danger-full-access is unrestricted): ${JSON.stringify(patterns)}.`)
-          }
-          const source = this.currentReadonlyFileName()
-          if (source.length > 0) {
-            parts.push(`The workspace read-only rules file "${source}" contributes to those patterns; it is read from the session workspace root and cannot be modified by any tool or command.`)
-          }
-          const readDeny = policy.readDenyPatterns ?? ''
-          if (readDeny.trim().length > 0) {
-            parts.push(`Read-denied patterns (same gitignore semantics; the read tools and every sandboxed command refuse to read these paths, and grep / glob results never contain them; danger-full-access is unrestricted): ${JSON.stringify(readDeny)}.`)
-          }
-          const writable = policy.writablePaths ?? []
-          if (writable.length > 0) {
-            parts.push(`Additional writable roots under workspace-write (sandboxed commands and write/edit tools may write here; write-protected paths still win; does not apply in read-only): ${JSON.stringify(writable)}.`)
-          }
-          const overrides = policy.writableOverrides ?? []
-          if (overrides.length > 0) {
-            parts.push(`Session grants that bypass write protection for the write/edit tools and for sandboxed commands: ${JSON.stringify(overrides)}.`)
-          }
-          const sessionGrants = policy.sessionGrantPaths ?? []
-          if (sessionGrants.length > 0 && (policy.readDenyPatterns ?? '').trim().length > 0) {
-            parts.push(`A session grant also unlocks reading its path and everything under it: ${JSON.stringify(sessionGrants)}.`)
-          }
-          if (this.currentLimits().allowWritableRequests) {
-            parts.push(`Extra write access is not granted by default. Call ${JSON.stringify(REQUEST_WRITABLE_PATH_TOOL)} when the task will keep writing the same protected path or area (a directory of files to generate, a build output tree, a path outside the workspace that several writes depend on); a single file is written with the ordinary write/edit tools, and if that write is denied, leave it at that. The same grant is what unlocks a read-denied path, so use it there too. The user decides in an approval prompt, and the grant lasts only for this session. The user can also withdraw a grant at any time from the session's write-access panel; a withdrawn grant disappears from the lists above and you receive a notice naming the path.`)
-          } else {
-            parts.push('Extra write access is not granted by this deployment: do not ask for it.')
-          }
-          if (this.currentHardenWsl() && isWslHost()) {
-            parts.push('WSL interop hardening is active for sandboxed commands: the Windows drives under /mnt and the /run/WSL interop sockets are hidden, so Windows executables (cmd.exe and the like) cannot be launched from inside the sandbox. This is the Linux analog of the macOS broker hardening. Turn off WSL interop hardening in plugin settings if a task must use Windows interop from inside the sandbox.')
-          }
+          // 措辞按平台收窄: Windows 上命令侧没有围栏, 这部分见 prompt.ts.
+          const parts = writeProtectPromptLines({
+            platform: process.platform,
+            patterns,
+            readonlyFileName: this.currentReadonlyFileName(),
+            readDeny: policy.readDenyPatterns ?? '',
+            writable: policy.writablePaths ?? [],
+            overrides: policy.writableOverrides ?? [],
+            sessionGrants: policy.sessionGrantPaths ?? [],
+            allowWritableRequests: this.currentLimits().allowWritableRequests,
+            hardenWsl: this.currentHardenWsl() && isWslHost(),
+          })
           return parts.join(' ')
         },
       })
