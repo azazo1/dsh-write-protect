@@ -140,6 +140,10 @@ describe('mountGrantsRoute', () => {
     const rules = await post(fake.handler(), { sessionId: SESSION_ID, action: 'add', path: '.readonly', cwd: workspace })
     expect(rules.status).toBe(400)
     expect(String(rules.json.error)).toContain('rules file')
+    // 拼写变体同样拒绝: 相对形态按工作区根解析后仍是规则文件 (issue #2).
+    const rulesRelative = await post(fake.handler(), { sessionId: SESSION_ID, action: 'add', path: './.readonly', cwd: workspace })
+    expect(rulesRelative.status).toBe(400)
+    expect(String(rulesRelative.json.error)).toContain('rules file')
     expect(grants.listOf(SESSION_ID)).toEqual([])
   })
 

@@ -150,7 +150,9 @@ async function addGrant(
   }
   const target = resolution.path
   const rulesFile = host.rulesFilePath(workspaceRoot)
-  if (rulesFile !== undefined && target === rulesFile) {
+  // 前缀包含而不是精确相等: 拼写变体 (大小写, 尾部分隔符) 与后代拼写同样不得
+  // 绕过硬保护; 与 request-writable-path 工具侧同一套判定 (upstream issue #2).
+  if (rulesFile !== undefined && await isPathUnder(target, rulesFile)) {
     return jsonError(400, `"${raw}" is the workspace write-protect rules file, which is read-only by design and cannot be granted`)
   }
   const kind: GrantKind = await isPathUnder(target, workspaceRoot) ? 'override' : 'extra-root'

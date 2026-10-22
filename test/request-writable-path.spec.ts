@@ -227,6 +227,24 @@ describe('handleRequest 的拒绝路径', () => {
     expect(approval.requests).toHaveLength(0)
   })
 
+  it('规则文件的相对与祖先拼写同样被拒 (解析后的目标重新判定, issue #2)', async () => {
+    await boot([])
+    mkdirSync(join(workspace, 'sub'))
+    writeFileSync(join(workspace, '.readonly'), 'secrets/\n')
+    // 相对条目: 修复前 canonicalPath 按宿主 cwd 解析 (或原样返回), 精确相等漏判.
+    await expect(handleRequest(ctx, grants, host, './.readonly', '改规则', exec()))
+      .rejects.toThrow('read-only by design')
+    // 含 .. 的祖先拼写: 归一化后仍是规则文件.
+    await expect(handleRequest(ctx, grants, host, join(workspace, 'sub', '..', '.readonly'), '绕一下', exec()))
+      .rejects.toThrow('read-only by design')
+    // 祖先申请 (工作区根本身) 照常受理 —— 规则文件由命令侧的收尾只读挂载兜底.
+    const ancestor = await handleRequest(ctx, grants, host, '.', '整树授权', exec())
+    expect(ancestor.granted).toBe(true)
+    // 规则文件本身从未进入授权表.
+    expect(grants.listOf(SESSION_ID).some(grant => grant.path === join(workspace, '.readonly'))).toBe(false)
+    expect(approval.requests.filter(request => request.reason.includes('rules file'))).toHaveLength(0)
+  })
+
   it('通配与文件系统根这类无效路径直接拒绝', async () => {
     await boot([])
     await expect(handleRequest(ctx, grants, host, join(outside, '*.log'), '写日志', exec())).rejects.toThrow('glob metacharacters')

@@ -87,6 +87,13 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
       if (extra.length > 0) next = this.withBwrapBinds(next, extra)
       if (protectedPaths.length > 0) next = this.withBwrapReadonly(next, protectedPaths)
       if (overrides.length > 0) next = this.withBwrapOverrideBinds(next, overrides)
+      // 规则文件是唯一硬保护, 收尾必须再压一次只读: 授权可能落在它的祖先目录上,
+      // 后挂载覆盖早挂载, 所以这条 ro-bind 必须排在所有授权 bind 之后, 否则
+      // "任何工具与命令都改不了它" 的承诺会被一条祖先授权打穿 (upstream issue #2).
+      const rulesFile = policy.rulesFilePath
+      if (typeof rulesFile === 'string' && rulesFile.length > 0) {
+        next = this.withBwrapReadonly(next, [rulesFile])
+      }
       return next
     }
     if (profileArgs.includes('--rw')) {
@@ -147,6 +154,12 @@ export class WriteProtectSandboxProvider extends LocalSandboxProvider {
       const regexDenials = seatbeltRegexDenials(policy.readOnlyPatterns ?? '', policy.workspaceRoot)
       if (regexDenials.length > 0) next = this.appendSeatbelt(next, regexDenials)
       if (overrides.length > 0) next = this.withSeatbeltAllows(next, overrides)
+      // 规则文件的 deny 排在本会话授权 allow 之后: SBPL 按最后匹配生效, 祖先授权
+      // 不得把这份硬保护翻回可写 (upstream issue #2).
+      const rulesFile = policy.rulesFilePath
+      if (typeof rulesFile === 'string' && rulesFile.length > 0) {
+        next = this.withSeatbeltDenials(next, [rulesFile])
+      }
     }
     if (policy.hardenBroker === false) return next
     return this.appendSeatbelt(next, SEATBELT_BROKER_DENIALS)

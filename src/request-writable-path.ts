@@ -316,13 +316,6 @@ async function requestAccess(
   }
   const policy = host.resolve(sessionId, sessionCwd)
 
-  // 只读规则文件本身不接受申请: 它自己就是规则来源, 放宽它等于让写入方改写规则.
-  // 用户要改规则就改设置页的文件名, 或者在 DSH 之外编辑那份文件.
-  const rulesFile = host.rulesFilePath(workspaceRoot)
-  if (rulesFile !== undefined && canonicalPath(rawPath) === rulesFile) {
-    throw new Error(`request_writable_path rejected: "${rawPath}" is the workspace write-protect rules file, which is read-only by design and cannot be granted`)
-  }
-
   // 目标路径按"额外可写根那套字面路径规则"解析: 相对条目先相对会话工作区根定死,
   // 再 canonical 化; 工作区内的条目照样给出路径 (这里恰恰要受理它们), 只有其余
   // 行级告警 (通配符, 盘符相对路径, 文件系统根) 才直接拒绝. 不能直接用
@@ -336,6 +329,17 @@ async function requestAccess(
     throw new Error(`request_writable_path rejected: "${rawPath}" has no target path; give an absolute path, or one relative to the session workspace`)
   }
   const target = resolution.path
+
+  // 只读规则文件本身不接受申请: 它自己就是规则来源, 放宽它等于让写入方改写规则.
+  // 用户要改规则就改设置页的文件名, 或者在 DSH 之外编辑那份文件.
+  // 判定必须用解析后的 canonical 目标, 并按前缀包含 (isPathUnder) 判定, 而不是拿
+  // 请求原文做 canonicalPath 后比较: 原文的 canonicalPath 会把相对条目按宿主 cwd
+  // 解析、把 "~"/"$VAR" 原样保留, 两种拼写都能绕过精确相等; 前缀包含还顺带挡住
+  // 后代拼写 (upstream issue #2, 与 grants 面板路由同一套判定).
+  const rulesFile = host.rulesFilePath(workspaceRoot)
+  if (rulesFile !== undefined && await isPathUnder(target, rulesFile)) {
+    throw new Error(`request_writable_path rejected: "${rawPath}" is the workspace write-protect rules file, which is read-only by design and cannot be granted`)
+  }
 
   // 工作区内的路径: 判定它是否落在当前生效的保护路径之下. 设置页文本与规则文件
   // 都只是"当前的保护范围", 不构成不可申请的白名单: 用户可以整段保护工作区

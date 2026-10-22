@@ -3,7 +3,7 @@
 // 全部走真实 confine() 路径. 官方 confine() 自 0.1.6 起是异步的,
 // 因此这里所有调用都 await (同步读 `.argv` 正是曾经的沙箱挂掉原因).
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -95,6 +95,28 @@ describe('WriteProtectSandboxProvider.confine', () => {
     expect(result.argv).toEqual(baseline.argv)
   })
 
+  it('bwrap: 规则文件以只读挂载收尾, 排在所有授权 bind 之后 (issue #2)', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const rulesFile = join(realWs, '.readonly')
+    writeFileSync(rulesFile, 'secrets/\n')
+    // 授权落在本会话工作区根本身: 不加约束时, 后挂载的 --bind 会把规则文件翻回可写.
+    const result = await sandbox.confine(['true'], {
+      ...ww(realWs, [join(realWs, 'gitdir')], [], [realWs]),
+      rulesFilePath: rulesFile,
+    })
+    const separator = result.argv.indexOf('--')
+    // 最后一次挂载必须是规则文件的 ro-bind: bwrap 后挂载覆盖早挂载,
+    // 因此它排在祖先授权 bind 之后才能把硬保护压回去.
+    expect(result.argv.slice(separator - 3, separator)).toEqual(['--ro-bind', rulesFile, rulesFile])
+  })
+
+  it('bwrap: 未声明规则文件时 argv 与原行为一致', async () => {
+    const sandbox = await setup({}, BWRAP_INTERNALS)
+    const withoutRules = await sandbox.confine(['true'], ww(realWs, [join(realWs, 'gitdir')], [], [realWs]))
+    const separator = withoutRules.argv.indexOf('--')
+    expect(withoutRules.argv.slice(separator - 3, separator)).toEqual(['--bind', realWs, realWs])
+  })
+
   it('Seatbelt: 在 -p profile 文本末尾追加 deny 形式, 官方形式保留', async () => {
     const sandbox = await setup({}, SEATBELT_INTERNALS)
     const result = await sandbox.confine(['true'], ww('/ws', ['/ws/gitdir']))
@@ -114,6 +136,23 @@ describe('WriteProtectSandboxProvider.confine', () => {
     const result = await sandbox.confine(['true'], ww('/ws', ['/ws/gitdir', '/ws/dist']))
     const profile = result.argv[result.argv.indexOf('-p') + 1]
     expect(profile).toContain('(subpath "/ws/gitdir") (subpath "/ws/dist")')
+  })
+
+  it('Seatbelt: 规则文件的 deny 排在本会话授权 allow 之后 (issue #2)', async () => {
+    const sandbox = await setup({}, SEATBELT_INTERNALS)
+    const rulesFile = '/ws/.readonly'
+    // 授权 allow 落在保护路径 deny 之后; SBPL 按最后匹配生效, 因此规则文件自己的
+    // deny 必须再排在授权 allow 之后, 祖先授权才翻不回可写.
+    const result = await sandbox.confine(['true'], {
+      ...ww('/ws', ['/ws/gitdir'], [], ['/ws']),
+      rulesFilePath: rulesFile,
+    })
+    const profile = result.argv[result.argv.indexOf('-p') + 1]!
+    const overrideAllow = profile.indexOf('(allow file-write* (subpath "/ws"))')
+    const rulesDeny = profile.lastIndexOf(`(deny file-write* (subpath "${rulesFile}"))`)
+    expect(overrideAllow).toBeGreaterThan(-1)
+    expect(rulesDeny).toBeGreaterThan(overrideAllow)
+    expect(profile.endsWith(BROKER_TAIL)).toBe(true)
   })
 
   it('read-only 模式不叠加保护路径与额外可写根, 但同样追加 broker 加固', async () => {
